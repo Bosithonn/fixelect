@@ -1,0 +1,82 @@
+================================================================================
+FIXELECT SOFTWARE LICENSE & TERMS OF USE
+================================================================================
+
+Fixelect - Instant, Zero-Damage Offline Windows Grammar & Polish Tool
+Copyright (c) 2026 Bositxon Erkinxonov. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+DISCLAIMER OF WARRANTY & LIMITATION OF LIABILITY
+------------------------------------------------
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NONINFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHORS, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, LOSS OF DATA, BUSINESS INTERRUPTION,
+OR ACCIDENTAL ALTERATION OF TEXT CONTENT) ARISING IN ANY WAY OUT OF THE USE
+OR INABILITY TO USE THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+
+THE USER ACKNOWLEDGES THAT ARTIFICIAL INTELLIGENCE AND MACHINE LEARNING
+MODELS CAN MAKE ERRORS OR PRODUCE UNINTENDED TEXT OUTPUTS. THE USER ASSUMES
+FULL RESPONSIBILITY FOR REVIEWING ANY TEXT MODIFIED BY FIXELECT.
+
+================================================================================
+PRIVACY GUARANTEE
+================================================================================
+
+1. 100% OFFLINE & LOCAL: Fixelect performs all grammar correction, text
+   processing, and language model inference entirely on your local hardware.
+2. ZERO TELEMETRY: Fixelect does not collect, store, transmit, or log your
+   keystrokes, clipboard content, selected text, or personal information.
+3. NO CLOUD DEPENDENCY: After the initial optional model download, Fixelect
+   operates with zero network connections. Your writing never leaves your PC.
+
+================================================================================
+THIRD-PARTY NOTICES & OPEN SOURCE ATTRIBUTIONS
+================================================================================
+
+Fixelect bundles, interacts with, or utilizes the following open-source projects:
+
+1. Qwen 2.5 Language Model
+   Developed by Alibaba Cloud.
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+
+2. llama.cpp & llama-server
+   Copyright (c) 2023-2025 Georgi Gerganov and contributors.
+   Licensed under the MIT License:
+   https://github.com/ggerganov/llama.cpp/blob/master/LICENSE
+
+3. Harper English Dictionary & Curated Word Lists
+   Licensed under the Apache License, Version 2.0.
+
+4. Pyperclip
+   Copyright (c) 2014 Al Sweigart.
+   Licensed under the BSD 3-Clause License.
+
+5. Pystray
+   Copyright (c) 2015-2022 Moses Palmér.
+   Licensed under the GNU Lesser General Public License (LGPL v3) / BSD License.
+
+6. Pillow (PIL Fork)
+   Copyright (c) 1997-2011 by Secret Labs AB, 1995-2011 by Fredrik Lundh.
+   Copyright (c) 2010-2025 by Jeffrey A. Clark (Alex) and contributors.
+   Licensed under the Historical Permission Notice and Disclaimer (HPND License).
+
+7. Comtypes
+   Copyright (c) 2006-2021 Thomas Heller.
+   Licensed under the MIT License.
+================================================================================

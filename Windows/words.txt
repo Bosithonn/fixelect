@@ -1,0 +1,20 @@
+# Words Fixelect will never "correct".
+# One per line. Case-insensitive. Lines starting with # are ignored.
+#
+# You mostly won't need this: anything mixing letters and digits (MT300,
+# ORA-01555) and any all-caps word (SWIFT, PLSQL) is already left alone
+# automatically. Use this file for ordinary-looking words that are really
+# names or jargon.
+
+Bositxon
+Erkinxonov
+Bosithon
+Erkinhonov
+Bosit
+Fixelect
+Uzum
+Hamkorbank
+Tashkent
+Harper
+repo
+async

@@ -1,0 +1,50 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+**/*.pyc
+**/__pycache__/
+
+# Distribution & Build artifacts
+build/
+dist/
+**/build/
+**/dist/
+*.spec.bak
+*.dmg
+*.exe
+!Windows/resources/bin/*.exe
+*.zip
+*.app/
+**/dmg_staging/
+
+# Inno Setup output
+Output/
+**/Output/
+
+# AI Models & Weights
+*.gguf
+*.part
+*.safetensors
+model/
+models/
+**/models/
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Operating System Files
+.DS_Store
+**/.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDE & Editor artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+

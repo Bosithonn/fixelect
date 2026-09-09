@@ -1,0 +1,95 @@
+# -*- mode: python ; coding: utf-8 -*-
+
+block_cipher = None
+
+a = Analysis(
+    ['fixelect_mac.py'],
+    pathex=['tools'],
+    binaries=[],
+    datas=[
+        ('resources', 'resources'),
+        ('dictionary.txt', '.'),
+        ('freq.txt', '.'),
+        ('words.txt', '.'),
+        ('shorthand.txt', '.'),
+    ],
+    hiddenimports=[
+        'tools',
+        'tools.config_mac',
+        'tools.hardware_mac',
+        'tools.downloader_mac',
+        'tools.check_guard',
+        'tools.engine_mac',
+        'tools.clipboard_mac',
+        'tools.hotkey_mac',
+        'tools.status_bar',
+        'tools.ui_mac',
+        'pynput',
+        'pynput.keyboard._darwin',
+        'PIL',
+        'tkinter',
+        'rumps',
+        'AppKit',
+        'Cocoa',
+        'PyObjCTools',
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
+)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='Fixelect',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file='entitlements.plist',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name='Fixelect',
+)
+
+app = BUNDLE(
+    coll,
+    name='Fixelect.app',
+    icon='resources/app_icon.icns',
+    bundle_identifier='com.fixelect.app',
+    info_plist={
+        'CFBundleDisplayName': 'Fixelect',
+        'CFBundleName': 'Fixelect',
+        'CFBundleVersion': '1.0.0',
+        'CFBundleShortVersionString': '1.0.0',
+        'LSMinimumSystemVersion': '11.0',
+        'LSUIElement': True,
+        'NSRequiresAquaSystemAppearance': False,
+        'NSHighResolutionCapable': True,
+        'NSSupportsAutomaticGraphicsSwitching': True,
+        'NSAppleEventsUsageDescription': 'Fixelect simulates Cmd+C and Cmd+V to replace your selected text with corrected grammar.',
+        'NSSystemAdministrationUsageDescription': 'Fixelect requires Accessibility access to listen for global triggers (Double-tap Option, Double-tap Control, or custom hotkeys).',
+    },
+)

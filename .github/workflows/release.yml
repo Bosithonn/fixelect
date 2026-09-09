@@ -1,0 +1,176 @@
+name: Build & Release Fixelect
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: false
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows Installer (.exe)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'Windows/requirements.txt'
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --no-progress
+          if (Test-Path "C:\Program Files (x86)\Inno Setup 6") {
+            "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+          if (Test-Path "C:\Program Files (x86)\Inno Setup 7") {
+            "C:\Program Files (x86)\Inno Setup 7" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Windows/requirements.txt
+
+      - name: Build Windows executable with PyInstaller
+        run: |
+          cd Windows
+          pyinstaller --clean Fixelect.spec -y
+
+      - name: Compile Inno Setup installer
+        run: |
+          cd Windows
+          iscc installer.iss
+
+      - name: Verify installer binary
+        run: |
+          if (-not (Test-Path "Windows/dist/FixelectSetup.exe")) {
+            Write-Error "FixelectSetup.exe was not created!"
+            exit 1
+          }
+          Get-Item "Windows/dist/FixelectSetup.exe" | Select-Object Name, Length
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fixelect-Windows-Installer
+          path: Windows/dist/FixelectSetup.exe
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS DMG (.dmg)
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: 'MacOS/requirements.txt'
+
+      - name: Install Python dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install -r MacOS/requirements.txt
+
+      - name: Build macOS Application & DMG
+        run: |
+          cd MacOS
+          chmod +x build_dmg.sh
+          ./build_dmg.sh
+
+      - name: Verify DMG binary
+        run: |
+          if [ ! -f "MacOS/dist/Fixelect.dmg" ]; then
+            echo "Error: Fixelect.dmg was not created!"
+            exit 1
+          fi
+          ls -lh MacOS/dist/Fixelect.dmg
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fixelect-macOS-DMG
+          path: MacOS/dist/Fixelect.dmg
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Organize release assets
+        run: |
+          mkdir -p release_assets
+          find artifacts -type f -name "FixelectSetup.exe" -exec cp {} release_assets/ \;
+          find artifacts -type f -name "Fixelect.dmg" -exec cp {} release_assets/ \;
+          echo "Release assets staged:"
+          ls -lh release_assets/
+
+      - name: Determine tag name
+        id: tag_info
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "TAG_NAME=v1.0.0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create GitHub Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag_info.outputs.TAG_NAME }}
+          name: "Fixelect ${{ steps.tag_info.outputs.TAG_NAME }}"
+          draft: false
+          prerelease: false
+          files: release_assets/*
+          body: |
+            ## Fixelect ${{ steps.tag_info.outputs.TAG_NAME }} — 100% Offline AI Grammar & Executive Polish
+
+            Fixelect brings instant, zero-latency AI text correction and professional tone enhancement to every app on your system. **No cloud, no API keys, zero telemetry, 100% private.**
+
+            ---
+
+            ### 🚀 Download Installers
+            - **Windows (10 / 11 64-bit)**: [`FixelectSetup.exe`](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag_info.outputs.TAG_NAME }}/FixelectSetup.exe)
+            - **macOS (Apple Silicon M1/M2/M3/M4 & Intel)**: [`Fixelect.dmg`](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag_info.outputs.TAG_NAME }}/Fixelect.dmg)
+
+            ---
+
+            ### ✨ Key Features
+            - **Double-Tap Triggers**: Instant activation via quick double-taps (`⌥ ⌥` / `Ctrl+Alt+F` for Fix, `⌃ ⌃` / `Ctrl+Alt+P` for Polish).
+            - **Hardware-Accelerated Local Inference**:
+              - **Windows**: AVX2 CPU SIMD + NVIDIA CUDA automatic detection.
+              - **macOS**: Apple Silicon Unified Memory Metal GPU (`-ngl 99`) sub-second inference.
+            - **Strict Guarding Filter**: Preserves markdown, contractions, code snippets, and acronyms with zero hallucination.
+            - **Native System UI**:
+              - Fluent Dark theme for Windows 11.
+              - Dark Aqua SF Pro theme for macOS Sequoia & Sonoma.
+            - **Complete Privacy**: All processing occurs strictly on `127.0.0.1` local loopback. No network egress.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
