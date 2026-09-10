@@ -6,7 +6,7 @@ Select some text anywhere — browser, email, Slack, Telegram, Notes, Microsoft 
 
 ```
 Its been a long day, and i cant seem too focus on the the task.
-      ↓  ⌥ ⌥ (Mac) or Ctrl+Alt+F (Win)
+      ↓  Alt Alt (Win) or ⌥ ⌥ (Mac)
 It's been a long day, and I can't seem to focus on the task.
 ```
 
@@ -26,15 +26,15 @@ Pre-built, standalone installers are automatically generated for every release:
 ## ⚡ Key Capabilities
 
 ### 1. Instant Global Triggers & Customization
-- **Effortless Double-Taps (macOS Default)**:
-  - Double-tap `⌥ Option` (`⌥ ⌥`) → Instant Grammar & Typo Fix
-  - Double-tap `⌃ Control` (`⌃ ⌃`) → Executive & Professional Polish
-  - `⌥ ⌘ Q` → Graceful Quit
-- **Windows Hotkeys (Windows Default)**:
-  - `Ctrl + Alt + F` → Instant Grammar & Typo Fix
-  - `Ctrl + Alt + P` → Executive & Professional Polish
-  - `Ctrl + Alt + Q` → Graceful Quit
-- **Fully Customizable**: Remap hotkeys anytime via the visual Settings Dashboard.
+- **Effortless Double-Taps (Default on Windows & macOS)**:
+  - Double-tap `Alt` (`Alt Alt` on Windows) or `⌥ Option` (`⌥ ⌥` on Mac) → Instant Grammar & Typo Fix
+  - Double-tap `Ctrl` (`Ctrl Ctrl` on Windows) or `⌃ Control` (`⌃ ⌃` on Mac) → Executive & Professional Polish
+  - `Ctrl + Alt + Q` (Windows) / `⌥ ⌘ Q` (Mac) → Graceful Quit
+- **Flexible Presets & Full Customization**:
+  - Double-Tap Modifiers (Fastest, 1-hand thumb triggers)
+  - `Alt + Space` / `⌥ Space` quick combos
+  - Classic 3-Key (`Ctrl + Alt + F` / `Ctrl + Alt + P`)
+  - Remap to any custom key combination anytime via the visual Settings Dashboard.
 
 ### 2. Dual-Mode Correction Engine
 - **Proofread Mode**: Corrects typos, run-on words (`tobehonest` → `to be honest`), punctuation, and homophones (`your/you're`, `their/there/they're`) while preserving 100% of your authentic voice, slang, bullet points, and code fragments.

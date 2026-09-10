@@ -25,7 +25,15 @@ _tools_dir = pathlib.Path(__file__).resolve().parent
 if str(_tools_dir) not in sys.path:
     sys.path.insert(0, str(_tools_dir))
 
-from config import load_config, save_config, is_auto_start_enabled, set_auto_start, get_resource_path
+from config import (
+    load_config,
+    save_config,
+    is_auto_start_enabled,
+    set_auto_start,
+    get_resource_path,
+    get_hotkey_keycaps,
+    get_hotkey_label,
+)
 from hardware import detect_hardware
 from downloader import MODELS, download_model, resolve_model
 
@@ -962,14 +970,23 @@ class DashboardWindow:
     Spacious 750px layout with smooth curved cards, keycaps, and action buttons.
     """
 
-    def __init__(self, fix_fn=None, on_quit=None):
+    def __init__(self, fix_fn=None, on_quit=None, hotkey_listener=None):
         self.fix_fn = fix_fn
         self.on_quit = on_quit
+        self.hotkey_listener = hotkey_listener
         self.root = None
         self.hw = detect_hardware()
         self.config = load_config()
         self.result_queue = queue.Queue()
         self._after_id = None
+        self.badge_fix = None
+        self.badge_pol = None
+        self.btn_fix = None
+        self.btn_polish = None
+        self.trigger_mode_var = None
+        self.custom_fix_var = None
+        self.custom_pol_var = None
+        self.custom_frame = None
 
     def show(self):
         if self.root and tk.Tcl().eval(f"info exists {self.root}"):
@@ -979,7 +996,7 @@ class DashboardWindow:
 
         self.root = tk.Tk()
         self.root.title("Fixelect Dashboard & Settings")
-        self.root.geometry("750x810")
+        self.root.geometry("750x880")
         self.root.resizable(False, False)
         self.root.configure(bg=BG_DARK)
 
@@ -988,8 +1005,8 @@ class DashboardWindow:
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
         cx = (sw - 750) // 2
-        cy = (sh - 810) // 2
-        self.root.geometry(f"750x810+{cx}+{cy}")
+        cy = (sh - 880) // 2
+        self.root.geometry(f"750x880+{cx}+{cy}")
 
         # Windows 11 Dark Titlebar & Official Brand Icon
         hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
@@ -1173,10 +1190,9 @@ class DashboardWindow:
         card_fix = FluentCard(modes_row, border_color=ACCENT_BLUE, padx=14, pady=12)
         card_fix.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
 
-        badge_fix = tk.Frame(card_fix, bg=SURFACE_CARD)
-        badge_fix.pack(anchor="w", pady=(0, 6))
-        for key in ["Ctrl", "Alt", "F"]:
-            KeyCap(badge_fix, key_text=key).pack(side=tk.LEFT, padx=1)
+        self.badge_fix = tk.Frame(card_fix, bg=SURFACE_CARD)
+        self.badge_fix.pack(anchor="w", pady=(0, 6))
+        self._render_keycaps(self.badge_fix, "fix")
 
         tk.Label(
             card_fix,
@@ -1200,10 +1216,9 @@ class DashboardWindow:
         card_pol = FluentCard(modes_row, border_color=BRAND_RED, padx=14, pady=12)
         card_pol.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
-        badge_pol = tk.Frame(card_pol, bg=SURFACE_CARD)
-        badge_pol.pack(anchor="w", pady=(0, 6))
-        for key in ["Ctrl", "Alt", "P"]:
-            KeyCap(badge_pol, key_text=key).pack(side=tk.LEFT, padx=1)
+        self.badge_pol = tk.Frame(card_pol, bg=SURFACE_CARD)
+        self.badge_pol.pack(anchor="w", pady=(0, 6))
+        self._render_keycaps(self.badge_pol, "polish")
 
         tk.Label(
             card_pol,
@@ -1258,11 +1273,14 @@ class DashboardWindow:
         btn_row = tk.Frame(pg_card, bg=SURFACE_CARD)
         btn_row.pack(fill=tk.X, pady=(0, 8))
 
+        lbl_fix = f"Test Fix ({get_hotkey_label('fix', self.config)})"
+        lbl_pol = f"Test Polish ({get_hotkey_label('polish', self.config)})"
+
         self.btn_fix = CurvedButton(
             btn_row,
-            text="Test Fix (Ctrl+Alt+F)",
+            text=lbl_fix,
             command=lambda: self._run_test("fix"),
-            width=165,
+            width=175,
             height=34,
             radius=8,
             bg_color=ACCENT_BLUE,
@@ -1275,9 +1293,9 @@ class DashboardWindow:
 
         self.btn_polish = CurvedButton(
             btn_row,
-            text="Test Polish (Ctrl+Alt+P)",
+            text=lbl_pol,
             command=lambda: self._run_test("polish"),
-            width=165,
+            width=175,
             height=34,
             radius=8,
             bg_color=BRAND_RED,
@@ -1321,17 +1339,114 @@ class DashboardWindow:
             bg=SURFACE_CARD,
         ).pack(anchor="w", pady=(6, 0))
 
-        # --- SECTION 3: PREFERENCES (FluentCard) ---
+        # --- SECTION 3: PREFERENCES & SHORTCUTS (FluentCard) ---
         pref_card = FluentCard(main, padx=16, pady=10)
         pref_card.pack(fill=tk.X, pady=(0, 14))
 
         tk.Label(
             pref_card,
-            text="PREFERENCES:",
+            text="ACTIVATION TRIGGER & HOTKEYS:",
             font=FONT_BODY_BOLD,
             fg=TEXT_MUTED,
             bg=SURFACE_CARD,
         ).pack(anchor="w", pady=(0, 6))
+
+        self.trigger_mode_var = tk.StringVar(value=self.config.get("trigger_mode", "double_tap"))
+        self.custom_fix_var = tk.StringVar(value=self.config.get("custom_fix", "<ctrl>+<alt>+f"))
+        self.custom_pol_var = tk.StringVar(value=self.config.get("custom_polish", "<ctrl>+<alt>+p"))
+
+        presets_frame = tk.Frame(pref_card, bg=SURFACE_CARD)
+        presets_frame.pack(fill=tk.X, pady=(0, 2))
+
+        presets = [
+            ("double_tap", "Double-Tap Modifiers (Alt x2 Fix  •  Ctrl x2 Polish) — Recommended"),
+            ("alt_space", "Alt + Space (Alt Space Fix  •  Alt Shift Space Polish)"),
+            ("classic", "Classic 3-Key (Ctrl + Alt + F Fix  •  Ctrl + Alt + P Polish)"),
+            ("custom", "Custom Shortcuts..."),
+        ]
+
+        for val, label in presets:
+            rb = tk.Radiobutton(
+                presets_frame,
+                text=label,
+                variable=self.trigger_mode_var,
+                value=val,
+                command=self._on_trigger_mode_change,
+                font=FONT_BODY,
+                fg=TEXT_PRIMARY,
+                bg=SURFACE_CARD,
+                activebackground=SURFACE_CARD,
+                activeforeground=TEXT_PRIMARY,
+                selectcolor=BG_DARK,
+                highlightthickness=0,
+                bd=0,
+            )
+            rb.pack(anchor="w", pady=1)
+
+        # Custom inputs frame (collapsed by default unless mode is custom)
+        self.custom_frame = tk.Frame(pref_card, bg=SURFACE_CARD)
+
+        c_row = tk.Frame(self.custom_frame, bg=SURFACE_CARD)
+        c_row.pack(fill=tk.X, pady=(4, 2))
+
+        tk.Label(c_row, text="Fix Key:", font=FONT_SMALL_BOLD, fg=TEXT_MUTED, bg=SURFACE_CARD).pack(side=tk.LEFT, padx=(0, 4))
+        entry_cfix = tk.Entry(
+            c_row,
+            textvariable=self.custom_fix_var,
+            font=FONT_BODY,
+            width=16,
+            bg=ENTRY_BG,
+            fg=TEXT_PRIMARY,
+            insertbackground=TEXT_PRIMARY,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+        )
+        entry_cfix.pack(side=tk.LEFT, ipady=3, padx=(0, 12))
+
+        tk.Label(c_row, text="Polish Key:", font=FONT_SMALL_BOLD, fg=TEXT_MUTED, bg=SURFACE_CARD).pack(side=tk.LEFT, padx=(0, 4))
+        entry_cpol = tk.Entry(
+            c_row,
+            textvariable=self.custom_pol_var,
+            font=FONT_BODY,
+            width=16,
+            bg=ENTRY_BG,
+            fg=TEXT_PRIMARY,
+            insertbackground=TEXT_PRIMARY,
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=BORDER_COLOR,
+        )
+        entry_cpol.pack(side=tk.LEFT, ipady=3, padx=(0, 10))
+
+        CurvedButton(
+            c_row,
+            text="Apply",
+            command=self._save_trigger_mode,
+            width=75,
+            height=28,
+            radius=6,
+            bg_color=ACCENT_BLUE,
+            hover_color=ACCENT_BLUE_HOVER,
+            active_color=ACCENT_BLUE_ACTIVE,
+            font=FONT_SMALL_BOLD,
+            parent_bg=SURFACE_CARD,
+        ).pack(side=tk.LEFT)
+
+        if self.trigger_mode_var.get() == "custom":
+            self.custom_frame.pack(fill=tk.X, pady=(2, 4))
+
+        # Divider between shortcuts and general preferences
+        sep = tk.Frame(pref_card, height=1, bg=BORDER_COLOR)
+        sep.pack(fill=tk.X, pady=(6, 6))
+
+        tk.Label(
+            pref_card,
+            text="SYSTEM PREFERENCES:",
+            font=FONT_SMALL_BOLD,
+            fg=TEXT_MUTED,
+            bg=SURFACE_CARD,
+        ).pack(anchor="w", pady=(0, 4))
 
         self.sound_var = tk.BooleanVar(value=self.config.get("sound_enabled", True))
         chk_sound = tk.Checkbutton(
@@ -1348,7 +1463,7 @@ class DashboardWindow:
             highlightthickness=0,
             bd=0,
         )
-        chk_sound.pack(anchor="w", pady=(0, 4))
+        chk_sound.pack(anchor="w", pady=(0, 2))
 
         self.start_var = tk.BooleanVar(value=is_auto_start_enabled())
         chk_start = tk.Checkbutton(
@@ -1632,6 +1747,45 @@ class DashboardWindow:
             self.result_queue.put((res, ms))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _render_keycaps(self, parent_frame, mode):
+        if not parent_frame:
+            return
+        for w in parent_frame.winfo_children():
+            w.destroy()
+        caps = get_hotkey_keycaps(mode, self.config)
+        for key in caps:
+            KeyCap(parent_frame, key_text=key).pack(side=tk.LEFT, padx=1)
+
+    def _on_trigger_mode_change(self):
+        mode = self.trigger_mode_var.get()
+        if mode == "custom":
+            self.custom_frame.pack(fill=tk.X, pady=(2, 4))
+        else:
+            self.custom_frame.pack_forget()
+            self._save_trigger_mode()
+
+    def _save_trigger_mode(self):
+        mode = self.trigger_mode_var.get()
+        self.config["trigger_mode"] = mode
+        if mode == "custom":
+            self.config["custom_fix"] = self.custom_fix_var.get().strip()
+            self.config["custom_polish"] = self.custom_pol_var.get().strip()
+        save_config(self.config)
+
+        if self.hotkey_listener:
+            try:
+                self.hotkey_listener.reload(self.config)
+            except Exception as e:
+                print(f"Error reloading Windows hotkeys: {e}")
+
+        # Refresh KeyCaps and Playground buttons
+        self._render_keycaps(self.badge_fix, "fix")
+        self._render_keycaps(self.badge_pol, "polish")
+        if self.btn_fix:
+            self.btn_fix.set_text(f"Test Fix ({get_hotkey_label('fix', self.config)})")
+        if self.btn_polish:
+            self.btn_polish.set_text(f"Test Polish ({get_hotkey_label('polish', self.config)})")
 
     def _save_prefs(self):
         self.config["sound_enabled"] = self.sound_var.get()

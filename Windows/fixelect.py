@@ -1,11 +1,11 @@
 """
 Fixelect for Windows — 100% Offline AI Grammar Correction & Executive Polish
-Hardware-Accelerated Local Inference (CUDA / Vulkan / AVX2) • Win32 Hotkeys • Fluent Dark UI
+Hardware-Accelerated Local Inference (CUDA / Vulkan / AVX2) • Global Hotkeys • Fluent Dark UI
 
 Triggers:
-  Ctrl + Alt + F  ->  Proofread & Fix Grammar (100% voice & format preserved)
-  Ctrl + Alt + P  ->  Executive & Professional Polish (Articulate structure & tone)
-  Ctrl + Alt + Q  ->  Quit Fixelect (or exit via System Tray)
+  Alt x2 (Alt Alt)     ->  Proofread & Fix Grammar (Double-tap Alt; 100% voice preserved)
+  Ctrl x2 (Ctrl Ctrl)  ->  Executive & Professional Polish (Double-tap Ctrl; articulate clarity)
+  Ctrl + Alt + Q       ->  Quit Fixelect (or customize shortcuts in Dashboard)
 
 Author: Bositxon Erkinxonov
 License: MIT (100% Offline, Zero Telemetry)
@@ -66,8 +66,16 @@ else:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "tools"))
 
 from check_guard import BEAMS, MODELS, load_pipeline  # noqa: E402
-from config import load_config, save_config, is_auto_start_enabled, set_auto_start, get_resource_path  # noqa: E402
+from config import (  # noqa: E402
+    load_config,
+    save_config,
+    is_auto_start_enabled,
+    set_auto_start,
+    get_resource_path,
+    get_hotkey_label,
+)
 from downloader import resolve_model, download_model  # noqa: E402
+from hotkey_win import WinHotkeyListener  # noqa: E402
 
 # Default engine configuration
 MODEL = "qwen2.5"
@@ -797,6 +805,7 @@ Global Hotkeys (any app in Windows):
             dash = DashboardWindow(
                 fix_fn=run_fix,
                 on_quit=quit_app,
+                hotkey_listener=hotkey_listener,
             )
             _active_dashboard[0] = dash
 
@@ -838,24 +847,27 @@ Global Hotkeys (any app in Windows):
     ).start()
     reader_ready.wait(timeout=10)
 
-    # RegisterHotKey with a null window posts WM_HOTKEY to *this thread's*
-    # message queue, so no window is needed at all.
+    # Unified Windows Hotkey Dispatcher (supports Double-Tap Alt/Ctrl, Space combos, and custom keys)
+    def handle_fix_trigger():
+        show_busy_cursor()
+        jobs.put(("fix", None))
+
+    def handle_polish_trigger():
+        show_busy_cursor()
+        jobs.put(("polish", None))
+
+    hotkey_listener = WinHotkeyListener(
+        on_fix=handle_fix_trigger,
+        on_polish=handle_polish_trigger,
+        on_quit=quit_app,
+        config=load_config(),
+    )
+    hotkey_listener.start()
+
+    # Register classic fallback hotkeys on the Win32 message loop
     mods = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT
-    if not user32.RegisterHotKey(None, ID_FIX, mods, VK_F):
-        err_msg = (
-            "Fixelect could not register the primary hotkey (Ctrl + Alt + F).\n\n"
-            "Another running application (such as GPU software, a recording tool, "
-            "or another utility) is currently using this hotkey.\n\n"
-            "Please close the conflicting application or change its shortcuts, "
-            "then launch Fixelect again."
-        )
-        try:
-            user32.MessageBoxW(0, err_msg, "Fixelect — Hotkey Collision", 0x00000010)
-        except Exception:
-            pass
-        sys.exit(1)
-    if not user32.RegisterHotKey(None, ID_POLISH, mods, VK_P):
-        print("  ! warning: could not register ctrl+alt+p (professional mode)")
+    user32.RegisterHotKey(None, ID_FIX, mods, VK_F)
+    user32.RegisterHotKey(None, ID_POLISH, mods, VK_P)
     user32.RegisterHotKey(None, ID_QUIT, mods, VK_Q)
 
     tray = None
@@ -867,9 +879,11 @@ Global Hotkeys (any app in Windows):
             if "--autostart" in sys.argv or "--silent" in sys.argv:
                 def notify_startup():
                     time.sleep(1.2)
+                    fl = get_hotkey_label("fix")
+                    pl = get_hotkey_label("polish")
                     tray.notify(
                         "Fixelect Active",
-                        "Running in system tray. Press Ctrl+Alt+F to fix text, Ctrl+Alt+P to polish."
+                        f"Running in system tray. Fix: {fl}  •  Polish: {pl}"
                     )
                 threading.Thread(target=notify_startup, daemon=True).start()
         except Exception as e:
@@ -880,10 +894,12 @@ Global Hotkeys (any app in Windows):
     if "--silent" not in sys.argv and "--autostart" not in sys.argv and "--no-dashboard" not in sys.argv:
         threading.Thread(target=open_dashboard, daemon=True).start()
 
+    fix_label = get_hotkey_label("fix")
+    polish_label = get_hotkey_label("polish")
     print(f"\n  Engine: {ENGINE.upper()}")
-    print("  ctrl+alt+f   fix selected text (default mode: proofread & typos)")
-    print("  ctrl+alt+p   polish selected text (professional mode: structure & tone)")
-    print("  ctrl+alt+q   quit (or exit via System Tray)\n")
+    print(f"  {fix_label:<14} fix selected text (default mode: proofread & typos)")
+    print(f"  {polish_label:<14} polish selected text (professional mode: structure & tone)")
+    print("  Ctrl+Alt+Q     quit (or exit via System Tray)\n")
 
     msg = wintypes.MSG()
     try:
@@ -895,6 +911,11 @@ Global Hotkeys (any app in Windows):
                 mode = "polish" if msg.wParam == ID_POLISH else "fix"
                 jobs.put((mode, None))
     finally:
+        if hotkey_listener:
+            try:
+                hotkey_listener.stop()
+            except Exception:
+                pass
         if tray:
             try:
                 tray.stop()
@@ -903,7 +924,6 @@ Global Hotkeys (any app in Windows):
         user32.UnregisterHotKey(None, ID_FIX)
         user32.UnregisterHotKey(None, ID_POLISH)
         user32.UnregisterHotKey(None, ID_QUIT)
-        # Never leave the user staring at an hourglass because we crashed.
         restore_cursor()
         if ENGINE == "embedded":
             try:

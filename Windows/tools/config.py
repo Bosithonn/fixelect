@@ -14,7 +14,48 @@ DEFAULT_CONFIG = {
     "auto_start": False,
     "engine": "embedded",
     "theme": "dark",
+    "trigger_mode": "double_tap",       # "double_tap" | "alt_space" | "classic" | "custom"
+    "hotkey_fix": "double_alt",
+    "hotkey_polish": "double_control",
+    "custom_fix": "<ctrl>+<alt>+f",
+    "custom_polish": "<ctrl>+<alt>+p",
 }
+
+
+def get_hotkey_keycaps(mode: str = "fix", config: dict = None) -> list:
+    """Return a list of key symbol strings to display in UI badges/KeyCaps on Windows."""
+    if config is None:
+        config = load_config()
+    t_mode = config.get("trigger_mode", "double_tap")
+    if t_mode == "double_tap":
+        return ["Alt", "Alt"] if mode == "fix" else ["Ctrl", "Ctrl"]
+    elif t_mode == "alt_space":
+        return ["Alt", "Space"] if mode == "fix" else ["Alt", "Shift", "Space"]
+    elif t_mode == "classic":
+        return ["Ctrl", "Alt", "F"] if mode == "fix" else ["Ctrl", "Alt", "P"]
+    elif t_mode == "custom":
+        raw = config.get("custom_fix" if mode == "fix" else "custom_polish", "")
+        mapping = {
+            "<alt>": "Alt", "alt": "Alt",
+            "<ctrl>": "Ctrl", "control": "Ctrl", "ctrl": "Ctrl",
+            "<shift>": "Shift", "shift": "Shift",
+            "<space>": "Space", "space": "Space",
+            "<win>": "Win", "win": "Win",
+        }
+        parts = [p.strip().lower() for p in raw.replace("+", " + ").split(" + ") if p.strip()]
+        result = []
+        for p in parts:
+            result.append(mapping.get(p, p.upper()))
+        return result or (["Alt", "Alt"] if mode == "fix" else ["Ctrl", "Ctrl"])
+    return ["Alt", "Alt"] if mode == "fix" else ["Ctrl", "Ctrl"]
+
+
+def get_hotkey_label(mode: str = "fix", config: dict = None) -> str:
+    """Return a clean human-readable label (e.g. 'Alt Alt' or 'Ctrl+Alt+F')."""
+    caps = get_hotkey_keycaps(mode, config)
+    if len(caps) == 2 and caps[0] == caps[1]:
+        return f"{caps[0]} {caps[1]}"
+    return " + ".join(caps)
 
 RUN_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_REG_NAME = "Fixelect"

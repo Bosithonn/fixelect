@@ -38,6 +38,9 @@ hidden_imports = [
     'tools.hardware',
     'tools.tray',
     'tools.ui',
+    'tools.hotkey_win',
+    'pynput',
+    'pynput.keyboard._win32',
 ]
 
 a = Analysis(
