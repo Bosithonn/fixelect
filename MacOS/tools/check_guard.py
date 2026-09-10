@@ -1039,9 +1039,8 @@ def main():
     print("Fixelect Guard Verification (macOS)")
     print("=" * 78)
     print(f"Curated dictionary: {len(DICTIONARY):,} words loaded")
-    print(f"Contractions:       {len(SHORTHAND):,} mappings loaded")
-    print(f"Frequency words:    {len(FREQ_WORDS):,} entries loaded")
-    print("✓ Guard rules and heuristic dictionaries verified successfully.")
+    print(f"Protected words:    {len(PROTECTED_WORDS):,} entries loaded")
+    print("[OK] Guard rules and heuristic dictionaries verified successfully.")
 
 
 if __name__ == "__main__":
