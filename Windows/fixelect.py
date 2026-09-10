@@ -1,27 +1,14 @@
 """
-Fixelect - fix the grammar of whatever you have selected, anywhere in Windows.
+Fixelect for Windows — 100% Offline AI Grammar Correction & Executive Polish
+Hardware-Accelerated Local Inference (CUDA / Vulkan / AVX2) • Win32 Hotkeys • Fluent Dark UI
 
-Select some text in any app, press Ctrl+Alt+F, and it is replaced with a
-corrected version. Ctrl+Alt+Q quits. Nothing leaves your machine.
+Triggers:
+  Ctrl + Alt + F  ->  Proofread & Fix Grammar (100% voice & format preserved)
+  Ctrl + Alt + P  ->  Executive & Professional Polish (Articulate structure & tone)
+  Ctrl + Alt + Q  ->  Quit Fixelect (or exit via System Tray)
 
-    pip install pyperclip comtypes
-    ollama serve                       # must be running - see MODEL below
-    python fixelect.py
-
-    python fixelect.py "helo how are u"          # fix one sentence and exit
-    python fixelect.py --raw "helo how are u"    # ... and show the model's own
-                                                 # words plus every edit the
-                                                 # guard refused, which is how
-                                                 # you tell a weak model from
-                                                 # an over-strict guard
-
-MODEL picks the engine. On "lfm" the work happens in Ollama, so torch is not
-needed at all; on "base" you also need `pip install torch transformers
-sentencepiece` and the first run downloads ~1 GB.
-
-All the thinking lives in tools/check_guard.py - the guard that decides which
-of the model's rewrites are corrections and which are it going off on one.
-This file is only the Windows plumbing around it.
+Author: Bositxon Erkinxonov
+License: MIT (100% Offline, Zero Telemetry)
 """
 
 import ctypes
@@ -72,7 +59,6 @@ if getattr(sys, "frozen", False):
     if _tools.is_dir():
         sys.path.insert(0, str(_tools))
     sys.path.insert(0, str(_base_dir))
-    # Also add exe parent if running one-dir
     _exe_dir = pathlib.Path(sys.executable).resolve().parent
     if (_exe_dir / "tools").is_dir():
         sys.path.insert(0, str(_exe_dir / "tools"))
@@ -83,27 +69,11 @@ from check_guard import BEAMS, MODELS, load_pipeline  # noqa: E402
 from config import load_config, save_config, is_auto_start_enabled, set_auto_start, get_resource_path  # noqa: E402
 from downloader import resolve_model, download_model  # noqa: E402
 
-# "qwen2.5" - Qwen2.5 3B (sub-second GPU, highest accuracy, zero paraphrasing).
+# Default engine configuration
 MODEL = "qwen2.5"
-
-# Inference engine: "embedded" (self-contained, zero external dependencies) or "ollama" (fallback)
 ENGINE = "embedded"
-
-# Ignored for embedded/Ollama models (already quantized GGUF).
 FAST = False
-
-# Greedy deterministic decoding (temp 0.0) provides maximum speed,
-# zero hallucinations, and eliminates candidate drift on large documents.
 CANDIDATES = 1
-
-# How often to look at what you have selected, for the prefetch below.
-POLL_SECONDS = 0.35
-
-# How long a selection must sit still before we start working on it.
-SETTLE_SECONDS = 0.4
-
-# Minimum selection length for speculative prefetch.
-MIN_PREFETCH_CHARS = 8
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32

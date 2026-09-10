@@ -3,9 +3,10 @@ REM Run Fixelect (Python AI Engine)
 cd /d "%~dp0"
 
 echo ===================================================
-echo   Fixelect - AI Grammar and Spelling Desktop Engine
-echo   Hotkey: Ctrl+Alt+F to fix selection
-echo   Quit:   Ctrl+Alt+Q
+echo   Fixelect - AI Grammar & Executive Polish
+echo   Fix Text:    Ctrl+Alt+F
+echo   Polish Text: Ctrl+Alt+P
+echo   Quit:        Ctrl+Alt+Q
 echo ===================================================
 echo.
 
