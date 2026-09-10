@@ -83,6 +83,11 @@ ENGINE = "embedded"
 FAST = False
 CANDIDATES = 1
 
+# Prefetch watcher timing thresholds
+POLL_SECONDS = 0.35
+SETTLE_SECONDS = 0.4
+MIN_PREFETCH_CHARS = 8
+
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
@@ -774,6 +779,11 @@ Global Hotkeys (any app in Windows):
 
     _dashboard_lock = threading.Lock()
     _active_dashboard = [None]
+    jobs = queue.Queue()
+    cache = {}
+    reader_ready = threading.Event()
+    fix_holder = [None]
+    hotkey_holder = [None]
 
     def open_dashboard():
         with _dashboard_lock:
@@ -805,7 +815,7 @@ Global Hotkeys (any app in Windows):
             dash = DashboardWindow(
                 fix_fn=run_fix,
                 on_quit=quit_app,
-                hotkey_listener=hotkey_listener,
+                hotkey_listener=hotkey_holder[0],
             )
             _active_dashboard[0] = dash
 
@@ -836,11 +846,6 @@ Global Hotkeys (any app in Windows):
                 print("  [Fixelect] Setup cancelled or model not downloaded. Exiting.")
                 return
 
-    jobs = queue.Queue()
-    cache = {}
-    reader_ready = threading.Event()
-    fix_holder = [None]
-
     threading.Thread(target=worker, args=(jobs, cache, fix_holder), daemon=True).start()
     threading.Thread(
         target=watcher, args=(jobs, cache, reader_ready), daemon=True
@@ -862,6 +867,7 @@ Global Hotkeys (any app in Windows):
         on_quit=quit_app,
         config=load_config(),
     )
+    hotkey_holder[0] = hotkey_listener
     hotkey_listener.start()
 
     # Register classic fallback hotkeys on the Win32 message loop
