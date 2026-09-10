@@ -18,8 +18,8 @@ Pre-built, standalone installers are automatically generated for every release:
 
 | Platform | Format | Package | Requirements |
 | :--- | :--- | :--- | :--- |
-| **Windows** | Portable Installer | [**FixelectSetup.exe**](https://github.com/bosithon/fixelect/releases/latest) | Windows 10 / 11 (64-bit) |
-| **macOS** | Drag-and-Drop DMG | [**Fixelect.dmg**](https://github.com/bosithon/fixelect/releases/latest) | macOS 11.0+ (Apple Silicon M1–M4 & Intel) |
+| **Windows** | Portable Installer | [**FixelectSetup.exe**](https://github.com/Bosithonn/fixelect/releases/latest) | Windows 10 / 11 (64-bit) |
+| **macOS** | Drag-and-Drop DMG | [**Fixelect.dmg**](https://github.com/Bosithonn/fixelect/releases/latest) | macOS 11.0+ (Apple Silicon M1–M4 & Intel) |
 
 ---
 

@@ -5,7 +5,7 @@
 #define MyAppName "Fixelect"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Bositxon Erkinxonov"
-#define MyAppURL "https://github.com/bosithon/fixelect"
+#define MyAppURL "https://github.com/Bosithonn/fixelect"
 #define MyAppExeName "Fixelect.exe"
 
 [Setup]
