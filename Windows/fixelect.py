@@ -707,6 +707,15 @@ Global Hotkeys (any app in Windows):
         print(f"\nSelf-tests {'PASSED ALL CHECKS' if all_passed else 'HAD FAILURES'}.")
         return
 
+    # Parse runtime flags
+    is_silent = "--silent" in sys.argv
+    is_autostart = "--autostart" in sys.argv
+    is_no_tray = "--no-tray" in sys.argv
+    is_no_dashboard = "--no-dashboard" in sys.argv
+    for flag in ("--silent", "--autostart", "--no-tray", "--no-dashboard"):
+        while flag in sys.argv:
+            sys.argv.remove(flag)
+
     # One-shot mode for testing: python fixelect.py "some text to fix"
     args = sys.argv[1:]
     raw = args and args[0] == "--raw"
@@ -877,12 +886,12 @@ Global Hotkeys (any app in Windows):
     user32.RegisterHotKey(None, ID_QUIT, mods, VK_Q)
 
     tray = None
-    if "--no-tray" not in sys.argv:
+    if not is_no_tray:
         try:
             from tray import TrayManager
             tray = TrayManager(on_open_settings=open_dashboard, on_quit=quit_app)
             tray.start()
-            if "--autostart" in sys.argv or "--silent" in sys.argv:
+            if is_autostart or is_silent:
                 def notify_startup():
                     time.sleep(1.2)
                     fl = get_hotkey_label("fix")
@@ -897,7 +906,7 @@ Global Hotkeys (any app in Windows):
 
     # If launched explicitly by user (not Windows boot and not silent),
     # open Dashboard so the user sees the active window, hardware specs & playground!
-    if "--silent" not in sys.argv and "--autostart" not in sys.argv and "--no-dashboard" not in sys.argv:
+    if not is_silent and not is_autostart and not is_no_dashboard:
         threading.Thread(target=open_dashboard, daemon=True).start()
 
     fix_label = get_hotkey_label("fix")
