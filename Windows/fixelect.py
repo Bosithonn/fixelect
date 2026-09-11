@@ -73,6 +73,7 @@ from config import (  # noqa: E402
     set_auto_start,
     get_resource_path,
     get_hotkey_label,
+    parse_hotkey_string,
 )
 from downloader import resolve_model, download_model  # noqa: E402
 from hotkey_win import WinHotkeyListener  # noqa: E402
@@ -156,12 +157,14 @@ def fix_preserving_layout(text, fix_fn, mode="fix"):
 
     return newline.join(fixed_lines), all_applied, " ".join(all_expanded)
 
-MOD_ALT, MOD_CONTROL, MOD_NOREPEAT = 0x0001, 0x0002, 0x4000
+MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x0008, 0x4000
 VK_CONTROL, VK_MENU, VK_SHIFT = 0x11, 0x12, 0x10
-VK_C, VK_V, VK_F, VK_P, VK_Q = 0x43, 0x56, 0x46, 0x50, 0x51
+VK_C, VK_V, VK_F, VK_P, VK_Q, VK_SPACE = 0x43, 0x56, 0x46, 0x50, 0x51, 0x20
 KEYEVENTF_KEYUP = 0x0002
 WM_HOTKEY = 0x0312
-ID_FIX, ID_POLISH, ID_QUIT = 1, 2, 3
+ID_FIX, ID_POLISH, ID_QUIT = 1001, 1002, 1003
+ID_FALLBACK_FIX, ID_FALLBACK_POLISH = 1004, 1005
+WM_APP_RELOAD_HOTKEYS = 0x8000 + 10
 
 IDC_WAIT = 32514
 IDC_APPSTARTING = 32650
@@ -825,6 +828,7 @@ Global Hotkeys (any app in Windows):
                 fix_fn=run_fix,
                 on_quit=quit_app,
                 hotkey_listener=hotkey_holder[0],
+                on_reload_hotkeys=reload_system_hotkeys,
             )
             _active_dashboard[0] = dash
 
@@ -837,6 +841,9 @@ Global Hotkeys (any app in Windows):
 
     def quit_app():
         user32.PostThreadMessageW(main_thread_id, 0x0012, 0, 0)
+
+    def reload_system_hotkeys():
+        user32.PostThreadMessageW(main_thread_id, WM_APP_RELOAD_HOTKEYS, 0, 0)
 
     # 0. Single-Instance Check (Win32 Named Mutex)
     ensure_single_instance(open_dashboard)
@@ -879,11 +886,43 @@ Global Hotkeys (any app in Windows):
     hotkey_holder[0] = hotkey_listener
     hotkey_listener.start()
 
-    # Register classic fallback hotkeys on the Win32 message loop
-    mods = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT
-    user32.RegisterHotKey(None, ID_FIX, mods, VK_F)
-    user32.RegisterHotKey(None, ID_POLISH, mods, VK_P)
-    user32.RegisterHotKey(None, ID_QUIT, mods, VK_Q)
+    # Dynamic Windows OS System Hotkeys (handles Alt+Space, Classic, and Custom keys)
+    def apply_system_hotkeys():
+        cfg = load_config()
+        for hid in (ID_FIX, ID_POLISH, ID_QUIT, ID_FALLBACK_FIX, ID_FALLBACK_POLISH):
+            try:
+                user32.UnregisterHotKey(None, hid)
+            except Exception:
+                pass
+
+        # Always register emergency quit: Ctrl+Alt+Q
+        user32.RegisterHotKey(None, ID_QUIT, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_Q)
+
+        t_mode = cfg.get("trigger_mode", "double_tap")
+        if t_mode == "alt_space":
+            user32.RegisterHotKey(None, ID_FIX, MOD_ALT | MOD_NOREPEAT, VK_SPACE)
+            user32.RegisterHotKey(None, ID_POLISH, MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, VK_SPACE)
+            user32.RegisterHotKey(None, ID_FALLBACK_FIX, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F)
+            user32.RegisterHotKey(None, ID_FALLBACK_POLISH, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_P)
+        elif t_mode == "classic":
+            user32.RegisterHotKey(None, ID_FIX, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F)
+            user32.RegisterHotKey(None, ID_POLISH, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_P)
+        elif t_mode == "custom":
+            raw_fix = cfg.get("custom_fix", "Ctrl+Alt+F")
+            raw_pol = cfg.get("custom_polish", "Ctrl+Alt+P")
+            m1, v1 = parse_hotkey_string(raw_fix)
+            m2, v2 = parse_hotkey_string(raw_pol)
+            if v1:
+                user32.RegisterHotKey(None, ID_FIX, m1, v1)
+            if v2:
+                user32.RegisterHotKey(None, ID_POLISH, m2, v2)
+            user32.RegisterHotKey(None, ID_FALLBACK_FIX, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F)
+            user32.RegisterHotKey(None, ID_FALLBACK_POLISH, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_P)
+        elif t_mode == "double_tap":
+            user32.RegisterHotKey(None, ID_FALLBACK_FIX, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F)
+            user32.RegisterHotKey(None, ID_FALLBACK_POLISH, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_P)
+
+    apply_system_hotkeys()
 
     tray = None
     if not is_no_tray:
@@ -923,8 +962,10 @@ Global Hotkeys (any app in Windows):
                 if msg.wParam == ID_QUIT:
                     break
                 show_busy_cursor()
-                mode = "polish" if msg.wParam == ID_POLISH else "fix"
+                mode = "polish" if msg.wParam in (ID_POLISH, ID_FALLBACK_POLISH) else "fix"
                 jobs.put((mode, None))
+            elif msg.message == WM_APP_RELOAD_HOTKEYS:
+                apply_system_hotkeys()
     finally:
         if hotkey_listener:
             try:
@@ -936,9 +977,11 @@ Global Hotkeys (any app in Windows):
                 tray.stop()
             except Exception:
                 pass
-        user32.UnregisterHotKey(None, ID_FIX)
-        user32.UnregisterHotKey(None, ID_POLISH)
-        user32.UnregisterHotKey(None, ID_QUIT)
+        for hid in (ID_FIX, ID_POLISH, ID_QUIT, ID_FALLBACK_FIX, ID_FALLBACK_POLISH):
+            try:
+                user32.UnregisterHotKey(None, hid)
+            except Exception:
+                pass
         restore_cursor()
         if ENGINE == "embedded":
             try:

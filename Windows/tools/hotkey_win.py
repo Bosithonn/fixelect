@@ -42,8 +42,8 @@ class WinHotkeyListener:
     standard hotkey combinations and custom user-defined shortcuts.
     """
 
-    DOUBLE_TAP_MAX_INTERVAL = 0.38  # max seconds between consecutive taps
-    TAP_MAX_HOLD = 0.32             # max duration a modifier can be held to count as a tap
+    DOUBLE_TAP_MAX_INTERVAL = 0.55  # max seconds between consecutive taps
+    TAP_MAX_HOLD = 0.45             # max duration a modifier can be held to count as a tap
 
     def __init__(self, on_fix: Callable, on_polish: Callable, on_quit: Optional[Callable] = None, config: Optional[dict] = None):
         self.on_fix = on_fix
@@ -55,12 +55,13 @@ class WinHotkeyListener:
         self._lock = threading.RLock()
 
         # Double-tap tracking state
-        self._active_keys = set()
-        self._non_modifier_pressed = False
         self._alt_press_time = 0.0
         self._last_alt_release_time = 0.0
+        self._alt_invalidated = False
+
         self._ctrl_press_time = 0.0
         self._last_ctrl_release_time = 0.0
+        self._ctrl_invalidated = False
 
     def start(self) -> bool:
         if not _has_pynput:
@@ -168,80 +169,86 @@ class WinHotkeyListener:
     def _is_alt_key(self, key) -> bool:
         if _has_pynput and (key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr)):
             return True
-        return getattr(key, "name", "") in ("alt", "alt_l", "alt_r", "alt_gr")
+        name = getattr(key, "name", "")
+        if name in ("alt", "alt_l", "alt_r", "alt_gr"):
+            return True
+        vk = getattr(key, "vk", None)
+        return vk in (18, 164, 165)
 
     def _is_ctrl_key(self, key) -> bool:
         if _has_pynput and (key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r)):
             return True
-        return getattr(key, "name", "") in ("ctrl", "ctrl_l", "ctrl_r")
-
-    def _is_modifier_key(self, key) -> bool:
-        if self._is_alt_key(key) or self._is_ctrl_key(key):
+        name = getattr(key, "name", "")
+        if name in ("ctrl", "ctrl_l", "ctrl_r"):
             return True
-        if _has_pynput and key in (
-            keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r,
-            keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r
-        ):
-            return True
-        return getattr(key, "name", "") in ("cmd", "cmd_l", "cmd_r", "shift", "shift_l", "shift_r")
+        vk = getattr(key, "vk", None)
+        return vk in (17, 162, 163)
 
     def _on_dt_press(self, key):
-        self._active_keys.add(key)
         now = time.time()
+        is_alt = self._is_alt_key(key)
+        is_ctrl = self._is_ctrl_key(key)
 
-        # Check for clean exit combo Ctrl+Alt+Q even in double-tap mode
-        if self.on_quit:
-            ctrl_down = any(self._is_ctrl_key(k) for k in self._active_keys)
-            alt_down = any(self._is_alt_key(k) for k in self._active_keys)
-            q_down = False
-            if hasattr(key, "char") and key.char and key.char.lower() == "q":
-                q_down = True
-            if ctrl_down and alt_down and q_down:
-                self._handle_quit()
-                return
-
-        if self._is_alt_key(key):
-            if len(self._active_keys) == 1:
+        if is_alt:
+            if self._alt_press_time == 0.0:
                 self._alt_press_time = now
-                self._non_modifier_pressed = False
-        elif self._is_ctrl_key(key):
-            if len(self._active_keys) == 1:
+                self._alt_invalidated = False
+        elif is_ctrl:
+            if self._ctrl_press_time == 0.0:
                 self._ctrl_press_time = now
-                self._non_modifier_pressed = False
+                self._ctrl_invalidated = False
         else:
-            self._non_modifier_pressed = True
+            # If any other key is pressed while Alt or Ctrl is held down,
+            # this is a combination (e.g. Alt+Tab, Ctrl+C), NOT a standalone tap
+            if self._alt_press_time > 0.0:
+                self._alt_invalidated = True
+            if self._ctrl_press_time > 0.0:
+                self._ctrl_invalidated = True
 
     def _on_dt_release(self, key):
         now = time.time()
-        self._active_keys.discard(key)
+        is_alt = self._is_alt_key(key)
+        is_ctrl = self._is_ctrl_key(key)
 
         # 1. Alt Double-Tap (Fix)
-        if self._is_alt_key(key):
-            hold_time = now - self._alt_press_time
-            if hold_time <= self.TAP_MAX_HOLD and not self._non_modifier_pressed:
-                interval = now - self._last_alt_release_time
-                if interval <= self.DOUBLE_TAP_MAX_INTERVAL and self._last_alt_release_time > 0:
-                    self._last_alt_release_time = 0.0
-                    self._handle_fix()
-                    return
+        if is_alt:
+            if self._alt_press_time > 0.0 and not self._alt_invalidated:
+                hold_time = now - self._alt_press_time
+                if 0.02 <= hold_time <= self.TAP_MAX_HOLD:
+                    interval = now - self._last_alt_release_time
+                    if 0.04 <= interval <= self.DOUBLE_TAP_MAX_INTERVAL:
+                        self._last_alt_release_time = 0.0
+                        self._alt_press_time = 0.0
+                        self._handle_fix()
+                        return
+                    else:
+                        self._last_alt_release_time = now
                 else:
-                    self._last_alt_release_time = now
+                    self._last_alt_release_time = 0.0
             else:
                 self._last_alt_release_time = 0.0
+            self._alt_press_time = 0.0
+            self._alt_invalidated = False
 
         # 2. Ctrl Double-Tap (Polish)
-        elif self._is_ctrl_key(key):
-            hold_time = now - self._ctrl_press_time
-            if hold_time <= self.TAP_MAX_HOLD and not self._non_modifier_pressed:
-                interval = now - self._last_ctrl_release_time
-                if interval <= self.DOUBLE_TAP_MAX_INTERVAL and self._last_ctrl_release_time > 0:
-                    self._last_ctrl_release_time = 0.0
-                    self._handle_polish()
-                    return
+        elif is_ctrl:
+            if self._ctrl_press_time > 0.0 and not self._ctrl_invalidated:
+                hold_time = now - self._ctrl_press_time
+                if 0.02 <= hold_time <= self.TAP_MAX_HOLD:
+                    interval = now - self._last_ctrl_release_time
+                    if 0.04 <= interval <= self.DOUBLE_TAP_MAX_INTERVAL:
+                        self._last_ctrl_release_time = 0.0
+                        self._ctrl_press_time = 0.0
+                        self._handle_polish()
+                        return
+                    else:
+                        self._last_ctrl_release_time = now
                 else:
-                    self._last_ctrl_release_time = now
+                    self._last_ctrl_release_time = 0.0
             else:
                 self._last_ctrl_release_time = 0.0
+            self._ctrl_press_time = 0.0
+            self._ctrl_invalidated = False
 
     def _handle_fix(self):
         threading.Thread(target=self.on_fix, daemon=True).start()

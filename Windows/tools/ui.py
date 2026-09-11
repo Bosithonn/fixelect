@@ -970,10 +970,11 @@ class DashboardWindow:
     Spacious 750px layout with smooth curved cards, keycaps, and action buttons.
     """
 
-    def __init__(self, fix_fn=None, on_quit=None, hotkey_listener=None):
+    def __init__(self, fix_fn=None, on_quit=None, hotkey_listener=None, on_reload_hotkeys=None):
         self.fix_fn = fix_fn
         self.on_quit = on_quit
         self.hotkey_listener = hotkey_listener
+        self.on_reload_hotkeys = on_reload_hotkeys
         self.root = None
         self.hw = detect_hardware()
         self.config = load_config()
@@ -1772,6 +1773,12 @@ class DashboardWindow:
             self.config["custom_fix"] = self.custom_fix_var.get().strip()
             self.config["custom_polish"] = self.custom_pol_var.get().strip()
         save_config(self.config)
+
+        if self.on_reload_hotkeys:
+            try:
+                self.on_reload_hotkeys()
+            except Exception as e:
+                print(f"Error notifying hotkey reload: {e}")
 
         if self.hotkey_listener:
             def reload_async(cfg):

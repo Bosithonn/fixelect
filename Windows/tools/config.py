@@ -57,6 +57,44 @@ def get_hotkey_label(mode: str = "fix", config: dict = None) -> str:
         return f"{caps[0]} {caps[1]}"
     return " + ".join(caps)
 
+
+def parse_hotkey_string(combo: str) -> tuple:
+    """Parse a shortcut string like 'Alt + Space' or 'Ctrl+Alt+F' into Win32 (fsModifiers, vkCode)."""
+    if not combo:
+        return 0, 0
+    tokens = [t.strip().lower().strip("<>") for t in combo.replace("+", " ").split() if t.strip()]
+    mods = 0x4000  # MOD_NOREPEAT
+    vk = 0
+    vk_map = {
+        "space": 0x20, "return": 0x0D, "enter": 0x0D, "tab": 0x09,
+        "backspace": 0x08, "escape": 0x1B, "esc": 0x1B,
+        "delete": 0x2E, "del": 0x2E, "insert": 0x2D, "ins": 0x2D,
+        "home": 0x24, "end": 0x23, "pageup": 0x21, "pagedown": 0x22,
+        "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
+        "f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73, "f5": 0x74, "f6": 0x75,
+        "f7": 0x76, "f8": 0x77, "f9": 0x78, "f10": 0x79, "f11": 0x7A, "f12": 0x7B,
+    }
+    for i in range(10):
+        vk_map[str(i)] = 0x30 + i
+    for c in "abcdefghijklmnopqrstuvwxyz":
+        vk_map[c] = ord(c.upper())
+
+    for t in tokens:
+        if t in ("ctrl", "control"):
+            mods |= 0x0002  # MOD_CONTROL
+        elif t in ("alt", "menu", "opt", "option"):
+            mods |= 0x0001  # MOD_ALT
+        elif t in ("shift",):
+            mods |= 0x0004  # MOD_SHIFT
+        elif t in ("win", "windows", "cmd", "super"):
+            mods |= 0x0008  # MOD_WIN
+        elif t in vk_map:
+            vk = vk_map[t]
+        elif len(t) == 1:
+            vk = ord(t.upper())
+    return mods, vk
+
+
 RUN_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_REG_NAME = "Fixelect"
 
