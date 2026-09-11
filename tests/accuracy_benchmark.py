@@ -17,6 +17,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "Windows" / "tools"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "shared"))
 
 import check_guard as G  # noqa: E402
 import engine as E  # noqa: E402
@@ -81,7 +82,7 @@ KEEP = [
     ("russian", "Привет, как дела? "
                 "Встреча завтра в 10."),
     ("uzbek", "Salom, qalaysan? Ertaga uchrashamiz."),
-    ("mixed", "Meeting tomorrow, пожалуйста "
+    ("mixed", "Meeting tomorrow, пожалуйста, "
               "не опаздывай."),
 ]
 

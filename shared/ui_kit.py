@@ -830,6 +830,63 @@ class ScrollArea(tk.Frame):
         self._scroll_to(top0 + (e.y - y0) * ratio)
 
 
+class Segmented(tk.Frame):
+    """A row of mutually exclusive options: [(value, label)]."""
+
+    def __init__(self, parent, options, value, command=None):
+        super().__init__(parent, bg=parent.cget("bg"))
+        self.value, self.command = value, command
+        self.buttons = {}
+        for v, text in options:
+            b = Button(self, text, (lambda x=v: self.set(x, notify=True)), "tab", height=30,
+                       font=FONTS["small_b"], padx=12)
+            b.pack(side="left", padx=(0, px(4)))
+            self.buttons[v] = b
+        self._paint()
+
+    def set(self, value, notify=False):
+        self.value = value
+        self._paint()
+        if notify and self.command:
+            self.command(value)
+
+    def _paint(self):
+        for v, b in self.buttons.items():
+            b.set_variant("tab_on" if v == self.value else "tab")
+
+    def set_parent_bg(self, color):
+        self.configure(bg=color)
+        for b in self.buttons.values():
+            b.set_parent_bg(color)
+
+
+class Chips(tk.Text):
+    """Wrapping row of removable pills: items = [(key, label)]."""
+
+    def __init__(self, parent, on_remove, height=2, trailing=""):
+        bg = parent.cget("bg")
+        super().__init__(parent, height=height, bg=bg, relief="flat", bd=0, highlightthickness=0,
+                         wrap="word", cursor="arrow", font=FONTS["small"], fg=TEXT_3)
+        self.on_remove, self.trailing = on_remove, trailing
+
+    def render(self, items, trailing=None):
+        self.configure(state="normal")
+        self.delete("1.0", "end")
+        bg = self.cget("bg")
+        for key, text in items:
+            chip = tk.Frame(self, bg=bg)
+            Pill(chip, text + "   ×", fg=TEXT, fill=SURFACE_3, height=24, font=FONTS["small"]).pack()
+            for child in [chip] + chip.winfo_children():
+                child.bind("<Button-1>", lambda e, k=key: self.on_remove(k))
+                child.configure(cursor="hand2")
+            self.window_create("end", window=chip, padx=px(2), pady=px(2))
+        tail = self.trailing if trailing is None else trailing
+        if tail:
+            self.insert("end", "  " + tail)
+        lines = int(self.index("end-1c").split(".")[0])
+        self.configure(height=max(1, min(6, lines + (len(items) // 5))), state="disabled")
+
+
 # ---------------------------------------------------------------------------
 # Window helpers
 # ---------------------------------------------------------------------------

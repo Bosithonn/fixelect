@@ -3,10 +3,10 @@ Model manager and downloader for Fixelect.
 Resolves, discovers, and downloads GGUF models into %LOCALAPPDATA%\\Fixelect\\models\\.
 """
 
+import hashlib
 import os
 import pathlib
 import shutil
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -16,6 +16,7 @@ MODELS = {
         "name": "Qwen 2.5 3B — High Quality & Nuance",
         "short_name": "Qwen 2.5 3B",
         "filename": "qwen2.5-3b-instruct-q4_k_m.gguf",
+        "sha256": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
         "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
         "size_bytes": 2104932768,
         "approx_mb": 2007,
@@ -28,6 +29,7 @@ MODELS = {
         "name": "Qwen 2.5 1.5B — Fast & Compact",
         "short_name": "Qwen 2.5 1.5B",
         "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
         "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
         "size_bytes": 1117320736,
         "approx_mb": 1065,
@@ -40,6 +42,7 @@ MODELS = {
         "name": "Qwen 2.5 0.5B — Ultra Light & Battery Saver",
         "short_name": "Qwen 2.5 0.5B",
         "filename": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        "sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
         "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
         "size_bytes": 491400032,
         "approx_mb": 468,
@@ -52,6 +55,7 @@ MODELS = {
         "name": "Qwen 2.5 7B — Executive Pro & Complex Nuance",
         "short_name": "Qwen 2.5 7B",
         "filename": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        "sha256": "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423",
         "url": "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
         "size_bytes": 4683074240,
         "approx_mb": 4466,
@@ -64,6 +68,7 @@ MODELS = {
         "name": "Llama 3.2 3B — Conversational Clarity & Flow",
         "short_name": "Llama 3.2 3B",
         "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+        "sha256": "6c1a2b41161032677be168d354123594c0e6e67d2b9227c84f296ad037c728ff",
         "url": "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
         "size_bytes": 2019377696,
         "approx_mb": 1925,
@@ -76,6 +81,7 @@ MODELS = {
         "name": "DeepSeek R1 Distill 1.5B — Precision & Logic",
         "short_name": "DeepSeek R1 1.5B",
         "filename": "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
+        "sha256": "1741e5b2d062b07acf048bf0d2c514dadf2a48f94e2b4aa0cfe069af3838ee2f",
         "url": "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
         "size_bytes": 1117320800,
         "approx_mb": 1065,
@@ -219,6 +225,14 @@ def download_model(profile="3b", progress_callback=None, cancel_event=None):
         length = response.headers.get("Content-Length")
         total_bytes = (int(length) + initial_bytes) if length else spec["size_bytes"]
 
+        # Hash while downloading (and the resumed part first), so the checksum
+        # costs no extra pass over a multi-GB file.
+        digest = hashlib.sha256()
+        if initial_bytes:
+            with open(part_path, "rb") as f:
+                for block in iter(lambda: f.read(4 * 1024 * 1024), b""):
+                    digest.update(block)
+
         downloaded = initial_bytes
         started, last_cb = time.time(), 0.0
         try:
@@ -230,6 +244,7 @@ def download_model(profile="3b", progress_callback=None, cancel_event=None):
                     if not chunk:
                         break
                     out_f.write(chunk)
+                    digest.update(chunk)
                     downloaded += len(chunk)
                     now = time.time()
                     if progress_callback and (now - last_cb >= 0.1):
@@ -246,6 +261,9 @@ def download_model(profile="3b", progress_callback=None, cancel_event=None):
     if downloaded < 100 * 1024 * 1024:
         part_path.unlink(missing_ok=True)
         raise RuntimeError("The downloaded file is invalid. Please try again.")
+    if spec.get("sha256") and digest.hexdigest() != spec["sha256"]:
+        part_path.unlink(missing_ok=True)
+        raise RuntimeError("The download was corrupted (checksum mismatch). Please try again.")
 
     os.replace(part_path, target_path)
     if progress_callback:

@@ -8,6 +8,11 @@ import os
 import pathlib
 import sys
 
+try:
+    from apps_win import DEFAULT_DISABLED
+except Exception:  # pragma: no cover
+    DEFAULT_DISABLED = []
+
 DEFAULT_CONFIG = {
     "model_profile": "3b",
     "sound_enabled": True,
@@ -20,6 +25,18 @@ DEFAULT_CONFIG = {
     "custom_fix": "Ctrl+Alt+F",
     "custom_polish": "Ctrl+Alt+P",
     "prefetch_enabled": False,          # speculative fixes of selected text (uses more power)
+    "polish_style": "professional",     # see check_guard.POLISH_STYLES
+    "custom_instruction": "",           # the writer's own style note for Polish
+    "polish_preview": True,             # show Polish results before replacing
+    "multilingual": True,               # fix Spanish, French, German, ... too
+    "hud_enabled": True,                # small on-screen status card
+    "keep_formatting": True,            # paste rich text when the app copied rich text
+    "unload_minutes": 10,               # free the model's memory after this idle time (0 = never)
+    "check_updates": True,
+    "last_update_check": 0,
+    "skipped_version": "",
+    "onboarding_done": False,
+    "disabled_apps": list(DEFAULT_DISABLED),
 }
 
 _MODIFIER_TOKENS = {"ctrl", "control", "alt", "menu", "opt", "option", "shift", "win", "windows", "cmd", "super"}
@@ -165,7 +182,7 @@ def get_resource_path(relative_path):
 
 def load_config():
     """Load configuration dictionary from disk, merging with defaults."""
-    cfg = DEFAULT_CONFIG.copy()
+    cfg = {k: (list(v) if isinstance(v, list) else v) for k, v in DEFAULT_CONFIG.items()}
     p = get_config_path()
     if p.is_file():
         try:

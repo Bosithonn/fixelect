@@ -1,96 +1,109 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Fixelect macOS DMG Packaging Script
-# Packages Fixelect.app into a standalone drag-and-drop Fixelect.dmg installer
+# Fixelect macOS build: Fixelect.app (with its AI engine inside) -> Fixelect.dmg
+#
+#   ./build_dmg.sh
+#
+# Optional environment (set in CI from repository secrets):
+#   DEVELOPER_ID          "Developer ID Application: Name (TEAMID)" - sign for Gatekeeper
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD
+#                         notarize the DMG and staple the ticket
+# Without them the app is ad-hoc signed and the DMG includes a first-open helper.
 # ==============================================================================
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 APP_NAME="Fixelect"
-VOLUME_NAME="Fixelect"
-DMG_NAME="Fixelect.dmg"
 DIST_DIR="$SCRIPT_DIR/dist"
-STAGING_DIR="$DIST_DIR/dmg_staging"
+BUILD_DIR="$SCRIPT_DIR/build"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
+DMG_PATH="$DIST_DIR/$APP_NAME.dmg"
+STAGING_DIR="$DIST_DIR/dmg_staging"
+ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 
-echo "======================================================="
-echo " Building $APP_NAME for macOS (Phase 5 DMG Packaging)"
-echo "======================================================="
+# Pinned llama.cpp Metal build shipped inside the app (the app never downloads
+# code at runtime). Keep in sync with tools/downloader_mac.py.
+ENGINE_URL="https://github.com/ggml-org/llama.cpp/releases/download/b4600/llama-b4600-bin-macos-arm64.zip"
+ENGINE_SHA256="b1bfd80df6eca26ef304df47135069dfdf282fa4dcfba1a684e1ff857728973a"
 
-# 1. Check if Fixelect.app is built, or build it via PyInstaller
-if [ ! -d "$APP_BUNDLE" ]; then
-    echo ">> $APP_BUNDLE not found. Building via PyInstaller..."
-    if command -v pyinstaller &> /dev/null; then
-        pyinstaller --clean Fixelect_Mac.spec -y
-    else
-        echo ">> PyInstaller not found. Attempting py2app build..."
-        python3 setup.py py2app
-    fi
+echo "== Building $APP_NAME for macOS"
+
+command -v pyinstaller >/dev/null || { echo "PyInstaller missing: pip3 install -r requirements.txt"; exit 1; }
+
+# 1. App bundle
+rm -rf "$APP_BUNDLE" "$DMG_PATH" "$STAGING_DIR"
+pyinstaller --clean Fixelect_Mac.spec -y
+
+# 2. The AI engine, verified against its pinned checksum
+mkdir -p "$BUILD_DIR"
+ENGINE_ZIP="$BUILD_DIR/llama-engine.zip"
+if [ ! -f "$ENGINE_ZIP" ] || [ "$(shasum -a 256 "$ENGINE_ZIP" | cut -d ' ' -f 1)" != "$ENGINE_SHA256" ]; then
+    echo ">> Downloading the llama.cpp engine"
+    curl -fsSL -o "$ENGINE_ZIP" "$ENGINE_URL"
 fi
-
-if [ ! -d "$APP_BUNDLE" ]; then
-    echo "Error: Failed to create $APP_BUNDLE"
-    exit 1
+if [ "$(shasum -a 256 "$ENGINE_ZIP" | cut -d ' ' -f 1)" != "$ENGINE_SHA256" ]; then
+    echo "Error: engine checksum mismatch"; exit 1
 fi
+rm -rf "$BUILD_DIR/llama-engine"
+unzip -q "$ENGINE_ZIP" -d "$BUILD_DIR/llama-engine"
+ENGINE_DEST="$APP_BUNDLE/Contents/Frameworks/llama"
+mkdir -p "$ENGINE_DEST"
+cp "$BUILD_DIR/llama-engine/build/bin/llama-server" "$BUILD_DIR/llama-engine/build/bin/"*.dylib "$ENGINE_DEST/"
+chmod 755 "$ENGINE_DEST"/*
+echo ">> Engine bundled: $(ls "$ENGINE_DEST" | tr '\n' ' ')"
 
-# 2. Code sign bundle
-echo ">> Code signing $APP_BUNDLE..."
-if [ -n "$DEVELOPER_ID" ]; then
-    echo "   Signing with Developer ID: $DEVELOPER_ID"
-    codesign --force --deep --options runtime --entitlements "$SCRIPT_DIR/entitlements.plist" --sign "$DEVELOPER_ID" "$APP_BUNDLE"
+# 3. Code signing (inside-out: engine binaries, then the app)
+if [ -n "${DEVELOPER_ID:-}" ]; then
+    echo ">> Signing with $DEVELOPER_ID"
+    SIGN=(codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$DEVELOPER_ID")
+    for f in "$ENGINE_DEST"/*; do "${SIGN[@]}" "$f"; done
+    "${SIGN[@]}" --deep "$APP_BUNDLE"
+    codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 else
-    echo "   Ad-hoc signing with entitlements (hardened runtime)..."
-    codesign --force --deep --sign - --entitlements "$SCRIPT_DIR/entitlements.plist" "$APP_BUNDLE" || true
+    echo ">> No DEVELOPER_ID: ad-hoc signing (Gatekeeper will ask the user to confirm on first open)"
+    for f in "$ENGINE_DEST"/*; do codesign --force --sign - "$f"; done
+    codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 fi
 
-echo ">> Preparing DMG staging folder..."
-rm -rf "$STAGING_DIR"
+# 4. DMG
 mkdir -p "$STAGING_DIR"
-
-# 3. Copy .app bundle into staging
 cp -R "$APP_BUNDLE" "$STAGING_DIR/"
-
-# 4. Create Applications symlink for drag-and-drop installation
-echo ">> Creating /Applications symlink..."
 ln -s /Applications "$STAGING_DIR/Applications"
-
-# 5. Add 1-Click Gatekeeper Helper for macOS Sequoia & Sonoma
-cat << 'EOF' > "$STAGING_DIR/First_Time_Open_Helper.command"
+NOTARIZE=0
+if [ -n "${DEVELOPER_ID:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+    NOTARIZE=1
+fi
+if [ "$NOTARIZE" = 0 ]; then
+    # Unsigned builds only: macOS quarantines apps from unknown developers.
+    cat << 'EOF' > "$STAGING_DIR/First_Time_Open_Helper.command"
 #!/bin/bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
-echo "======================================================="
-echo " Fixelect — macOS Gatekeeper Setup Helper"
-echo "======================================================="
+echo "Fixelect - first-open helper for builds that are not notarized"
 if [ -d "/Applications/Fixelect.app" ]; then
-    echo ">> Clearing Gatekeeper quarantine on /Applications/Fixelect.app..."
     xattr -cr /Applications/Fixelect.app 2>/dev/null || true
-    echo ">> Launching Fixelect..."
     open /Applications/Fixelect.app
 else
-    echo ">> Please drag Fixelect.app into Applications first!"
+    echo "Drag Fixelect.app into Applications first."
 fi
-echo "Done."
 sleep 2
 EOF
-chmod +x "$STAGING_DIR/First_Time_Open_Helper.command"
-
-# 4. Create DMG via native macOS hdiutil
-echo ">> Building compressed DMG ($DMG_NAME)..."
-rm -f "$DIST_DIR/$DMG_NAME"
-hdiutil create \
-    -volname "$VOLUME_NAME" \
-    -srcfolder "$STAGING_DIR" \
-    -ov \
-    -format UDZO \
-    "$DIST_DIR/$DMG_NAME"
-
-# 5. Cleanup
+    chmod +x "$STAGING_DIR/First_Time_Open_Helper.command"
+fi
+hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
 rm -rf "$STAGING_DIR"
 
-echo "======================================================="
-echo " ✓ Build complete: $DIST_DIR/$DMG_NAME"
-echo " SHA-256: $(shasum -a 256 "$DIST_DIR/$DMG_NAME" | cut -d ' ' -f 1)"
-echo "======================================================="
+# 5. Notarization
+if [ "$NOTARIZE" = 1 ]; then
+    codesign --force --timestamp --sign "$DEVELOPER_ID" "$DMG_PATH"
+    echo ">> Notarizing (this can take a few minutes)"
+    xcrun notarytool submit "$DMG_PATH" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+        --password "$APPLE_APP_PASSWORD" --wait
+    xcrun stapler staple "$DMG_PATH"
+    spctl --assess --type open --context context:primary-signature -v "$DMG_PATH" || true
+fi
+
+shasum -a 256 "$DMG_PATH" | awk '{print $1}' > "$DMG_PATH.sha256"
+echo "== Built $DMG_PATH"
+echo "   SHA-256 $(cat "$DMG_PATH.sha256")   notarized: $([ "$NOTARIZE" = 1 ] && echo yes || echo no)"

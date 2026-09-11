@@ -1,4 +1,4 @@
-﻿# Fixelect — Windows Platform
+# Fixelect — Windows Platform
 
 This directory contains the complete Windows implementation, runtime sidecar, UI, packaging, and installer assets for **Fixelect**.
 
@@ -10,25 +10,24 @@ Windows/
 │   ├── bin/                 # Embedded llama-server sidecar binaries & Vulkan DLLs
 │   └── *.png, *.ico         # Application icons, branding, and tray assets
 ├── tools/
-│   ├── check_guard.py       # Core AI prompt engine, dual-mode consensus guard & diffing
+│   ├── apps_win.py          # Which app is in front (per-app off switch, focus hand-back)
+│   ├── clipboard_win.py     # 64-bit-safe clipboard: snapshot/restore, rich HTML, private writes
 │   ├── config.py            # User configuration, paths, and Windows registry startup
-│   ├── downloader.py        # Resumable model downloader with progress callback
-│   ├── engine.py            # Embedded llama-server process lifecycle manager
+│   ├── downloader.py        # Resumable, checksum-verified model downloader
+│   ├── engine.py            # Embedded llama-server lifecycle, idle unload
 │   ├── hardware.py          # Zero-subprocess Win32 ctypes CUDA / Vulkan / CPU detection
-│   ├── tray.py              # Windows System Tray menu with dynamic model switching
-│   └── ui.py                # Fluent Windows 11 dark UI, Setup window & live playground
-├── dist/                    # Built distribution outputs
-│   ├── Fixelect/            # Standalone PyInstaller folder distribution
-│   └── FixelectSetup.exe    # Inno Setup single-file installer (40 MB)
-├── dictionary.txt           # Curated English dictionary for guard verification
-├── freq.txt                 # Frequency corpus for spelling verification
-├── shorthand.txt            # Pre-expansion dictionary (e.g. tbh -> to be honest)
-├── words.txt                # User-protected terms whitelist
+│   ├── hotkey_win.py        # Double-tap Alt / Ctrl detection
+│   ├── hud_win.py           # On-screen status card and Polish preview
+│   └── tray.py              # System tray menu
+├── dist/                    # Built distribution outputs (PyInstaller folder + FixelectSetup.exe)
 ├── fixelect.py              # Main Windows application entry point & Win32 hotkey loop
 ├── Fixelect.spec            # PyInstaller build specification
 ├── file_version_info.txt    # Windows PE version and author metadata
-├── installer.iss            # Inno Setup 7 installer compiler script
+├── installer.iss            # Inno Setup installer script (version / signing via ISCC defines)
 └── run_python.bat           # 1-click developer launcher script
+
+The guard, prompts, languages, chunking, rich text, dashboard UI, updater and
+word lists are shared with macOS and live in ../shared.
 ```
 
 ## Running in Development

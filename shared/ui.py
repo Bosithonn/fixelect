@@ -1,21 +1,23 @@
 """
-Fixelect windows: Dashboard, first-run Setup, macOS Permissions and Privacy.
+Fixelect windows: Dashboard, first-run Setup + tutorial, macOS Permissions and Privacy.
 
 Threading model
   * Windows: UIManager owns ONE long-lived Tk interpreter on a dedicated UI
     thread. Tray clicks, hotkeys and a second app launch only *post* requests
-    to it, so no Tk call ever happens on a foreign thread (the old code built a
-    new Tk() per open on random threads and poked it from others).
+    to it, so no Tk call ever happens on a foreign thread. The on-screen status
+    card and the Polish preview live on the same thread.
   * macOS: Cocoa requires UI on the main thread, so each window runs in its own
     short-lived process via run_standalone(); the menu-bar daemon never imports Tk.
 
-This file is shared verbatim by both platforms (MacOS/tools/ui_mac.py).
+This file is shared by both platforms (see shared/).
 """
 
 import difflib
+import os
 import pathlib
 import queue
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -31,20 +33,22 @@ import ui_kit as K  # noqa: E402
 from ui_kit import (  # noqa: E402
     BG, SURFACE, SURFACE_2, SURFACE_3, FIELD, BORDER, TEXT, TEXT_2, TEXT_3, ACCENT, ACCENT_SOFT,
     CORAL, GREEN, GREEN_SOFT, AMBER, AMBER_SOFT, RED, RED_SOFT, IS_MAC, px,
-    Button, Card, Pill, Toggle, ProgressBar, TextBox, ShortcutRecorder, ScrollArea,
+    Button, Card, Pill, Toggle, ProgressBar, TextBox, ShortcutRecorder, ScrollArea, Segmented, Chips,
     keycaps, label, spacer, style_titlebar, center, activate,
 )
+from version import APP_VERSION, RELEASES_URL  # noqa: E402
 
 if IS_MAC:
     import config_mac as C
     import downloader_mac as D
     import hardware_mac as H
+    import apps_mac as A
 else:
     import config as C
     import downloader as D
     import hardware as H
+    import apps_win as A
 
-APP_VERSION = "1.0.0"
 MOD = "Cmd" if IS_MAC else "Ctrl"
 
 PRESETS_WIN = [
@@ -61,6 +65,8 @@ PRESETS_MAC = [
 ]
 
 SAMPLE = "tobehonest its kinda really strannge an i dont know what s hapenning with teh project"
+TUTORIAL_TEXT = "i dont know wher we shoud meet tomorow, can you send me the adress"
+IDLE_OPTIONS = [(10, "10 min"), (30, "30 min"), (60, "1 hour"), (0, "Never")]
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +107,16 @@ def _set_default_icon(root):
             pass
 
 
+def _open_path(path):
+    try:
+        if IS_MAC:
+            subprocess.Popen(["open", str(path)])
+        else:
+            os.startfile(str(path))  # noqa: S606 - opens a folder or URL the app chose
+    except Exception:
+        pass
+
+
 def diff_chunks(before, after):
     """Split `after` into (chunk, changed) runs so edits can be highlighted."""
     a = re.findall(r"\S+|\s+", before)
@@ -123,6 +139,11 @@ def _hw_line(hw):
     return "  ·  ".join(parts)
 
 
+def _styles():
+    from check_guard import POLISH_STYLES
+    return POLISH_STYLES
+
+
 class LocalServices:
     """Services for a window running without the daemon in-process
     (Windows `--dashboard`, every macOS window process)."""
@@ -133,9 +154,11 @@ class LocalServices:
         self._fix = None
         self._lock = threading.Lock()
         self._state = {"state": "idle", "detail": "", "backend": "", "model": ""}
+        self._update = None
 
-    def fix(self, text, mode="fix"):
-        from check_guard import load_pipeline, fix_preserving_layout
+    def fix(self, text, mode="fix", style=None):
+        from check_guard import load_pipeline
+        import chunking
         with self._lock:
             if self._fix is None:
                 self._state.update(state="loading")
@@ -147,7 +170,11 @@ class LocalServices:
                     raise
                 self._state.update(state="ready", model=C.load_config().get("model_profile", ""))
             fn = self._fix
-        return fix_preserving_layout(text, lambda t: fn(t, mode=mode), mode=mode)[0]
+        cfg = C.load_config()
+        opts = dict(style=style or cfg.get("polish_style", "professional"),
+                    custom=cfg.get("custom_instruction", "") if mode == "polish" else "",
+                    multilingual=bool(cfg.get("multilingual", True)))
+        return chunking.process(text, lambda t: fn(t, mode=mode, **opts), mode=mode)
 
     def status(self):
         return dict(self._state)
@@ -155,7 +182,6 @@ class LocalServices:
     def quit(self):
         if IS_MAC:
             try:
-                import os
                 import signal
                 pid = int((C.get_config_dir() / "fixelect.lock").read_text().strip() or 0)
                 if pid and pid != os.getpid():
@@ -177,6 +203,26 @@ class LocalServices:
 
     def prefs_changed(self):
         pass
+
+    def check_updates(self):
+        import updater
+        try:
+            self._update = updater.check()
+            C.update_config(last_update_check=time.time())
+            return self._update, None
+        except Exception:
+            return None, "Couldn't reach GitHub. Check your connection and try again."
+
+    def update_info(self):
+        return self._update
+
+    def install_update(self, info, progress, cancel):
+        _open_path(info.get("url") or RELEASES_URL)
+        return False
+
+    def diagnostics(self):
+        import diagnostics
+        return diagnostics.report({"Window process": "standalone"})
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +264,29 @@ class _Window:
             pass
         if self._on_close_cb:
             self._on_close_cb()
+
+
+def _pref_row(parent, var, title, desc, command, first=False, bg=SURFACE):
+    if not first:
+        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x")
+    r = tk.Frame(parent, bg=bg)
+    r.pack(fill="x", pady=px(10))
+    Toggle(r, var, command=command).pack(side="right", padx=(px(12), 0))
+    txt = tk.Frame(r, bg=bg)
+    txt.pack(side="left", fill="x", expand=True)
+    label(txt, title, "body_b").pack(fill="x")
+    if desc:
+        label(txt, desc, "small", TEXT_2, wrap=440).pack(fill="x", pady=(px(2), 0))
+    return r
+
+
+def _radio(canvas, sel, size=16):
+    canvas.delete("all")
+    s, m = px(size), px(2)
+    canvas.create_oval(m, m, s - m, s - m, outline=ACCENT if sel else K.BORDER_STRONG, width=px(2))
+    if sel:
+        i = px(size * 5 // 16)
+        canvas.create_oval(i, i, s - i, s - i, fill=ACCENT, outline=ACCENT)
 
 
 # ---------------------------------------------------------------------------
@@ -285,13 +354,7 @@ class ModelPicker:
             row["card"].fill = ACCENT_SOFT if sel else SURFACE
             row["card"].hover_fill = ACCENT_SOFT if sel else SURFACE_2
             row["card"].set_style(border=ACCENT if sel else BORDER)
-            d = row["dot"]
-            d.delete("all")
-            s, m = px(18), px(2)
-            d.create_oval(m, m, s - m, s - m, outline=ACCENT if sel else K.BORDER_STRONG, width=px(2))
-            if sel:
-                i = px(6)
-                d.create_oval(i, i, s - i, s - i, fill=ACCENT, outline=ACCENT)
+            _radio(row["dot"], sel, 18)
             for w in row["tags"].winfo_children():
                 w.destroy()
             bg = row["tags"].cget("bg")
@@ -322,7 +385,7 @@ class ModelPicker:
         self.action.set_state("normal")
         if not on_disk:
             self.action.set_text(f"Download  ·  {spec['badge_size']}")
-            self.info.configure(text=f"{spec['short_name']} will be downloaded once from Hugging Face.", fg=TEXT_2)
+            self.info.configure(text=f"{spec['short_name']} will be downloaded once and verified.", fg=TEXT_2)
         elif self.setup_mode:
             self.action.set_text("Start Fixelect")
             self.info.configure(text=f"{spec['short_name']} is ready on this computer.", fg=GREEN)
@@ -393,11 +456,30 @@ class ModelPicker:
 # Dashboard
 # ---------------------------------------------------------------------------
 
-class Dashboard(_Window):
-    TABS = ("Playground", "Shortcuts", "Model", "General")
+HELP_ITEMS = [
+    ("Nothing happened",
+     "Make sure text is highlighted first. Some fields (passwords, some games and remote desktops) block copying, "
+     "so Fixelect can't read them."),
+    ("“Fixelect is off in this app”",
+     "You (or the defaults) turned it off for that app. Remove the app under General → Turned off in."),
+    ("It said “Looks good” but there is a mistake",
+     "Fixelect only makes changes it is sure about and never rewrites correct words, names or code. "
+     "Polish rewrites more freely — try the other shortcut."),
+    ("A language isn't supported",
+     "Fixelect fixes English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. "
+     "Other languages are left unchanged on purpose."),
+    ("The shortcut doesn't work",
+     "Another app may use the same keys. Pick a different preset in Shortcuts; the status line there shows conflicts."),
+    ("The first fix after a break is slow",
+     "Fixelect frees the model's memory when you haven't used it for a while. Change this under General."),
+]
 
-    def __init__(self, master, services, post, on_close=None):
-        super().__init__(master, "Fixelect", 640, 690, on_close)
+
+class Dashboard(_Window):
+    TABS = ("Playground", "Shortcuts", "Writing", "Model", "General", "Help")
+
+    def __init__(self, master, services, post, on_close=None, page=None):
+        super().__init__(master, "Fixelect", 660, 700, on_close)
         self.services, self.post = services, post
         self.pages, self.tab_buttons = {}, {}
         self.current = None
@@ -417,23 +499,27 @@ class Dashboard(_Window):
         self.status_pill.pack(side="right")
 
         spacer(outer, 18)
-        tabs = tk.Frame(outer, bg=BG)
-        tabs.pack(fill="x")
+        self.tabs_row = tk.Frame(outer, bg=BG)
+        self.tabs_row.pack(fill="x")
         for name in self.TABS:
-            b = Button(tabs, name, lambda n=name: self.show(n), variant="tab", height=32, font=K.FONTS["body_b"], padx=14)
-            b.pack(side="left", padx=(0, px(4)))
+            b = Button(self.tabs_row, name, lambda n=name: self.show(n), variant="tab", height=32,
+                       font=K.FONTS["body_b"], padx=12)
+            b.pack(side="left", padx=(0, px(2)))
             self.tab_buttons[name] = b
-        tk.Frame(outer, bg=BORDER, height=1).pack(fill="x", pady=(px(12), px(18)))
+        self.rule = tk.Frame(outer, bg=BORDER, height=1)
+        self.rule.pack(fill="x", pady=(px(12), px(18)))
 
         self.content = tk.Frame(outer, bg=BG)
         self.content.pack(fill="both", expand=True)
 
-        self.show("Playground")
+        self.show(page if page in self.TABS or page == "Welcome" else "Playground")
         self._poll_status()
         self.present()
 
-    def request_focus(self):
+    def request_focus(self, page=None):
         if self.alive:
+            if page:
+                self.show(page)
             activate(self.win)
 
     # -- navigation -------------------------------------------------------------
@@ -443,14 +529,21 @@ class Dashboard(_Window):
             return
         if self.current:
             self.pages[self.current].pack_forget()
-            self.tab_buttons[self.current].set_variant("tab")
+            if self.current in self.tab_buttons:
+                self.tab_buttons[self.current].set_variant("tab")
         if name not in self.pages:
             page = tk.Frame(self.content, bg=BG)
             getattr(self, "_build_" + name.lower())(page)
             self.pages[name] = page
         self.pages[name].pack(fill="both", expand=True)
-        self.tab_buttons[name].set_variant("tab_on")
+        if name in self.tab_buttons:
+            self.tab_buttons[name].set_variant("tab_on")
         self.current = name
+
+    def _scroll_page(self, page, height=520):
+        area = ScrollArea(page, height)
+        area.pack(fill="both", expand=True)
+        return area.inner
 
     def _poll_status(self):
         st = self.services.status() or {}
@@ -459,6 +552,8 @@ class Dashboard(_Window):
         if state == "ready":
             text = "Ready" + (f"  ·  {model}" if model else "")
             self.status_pill.set(text, GREEN, GREEN_SOFT, dot=GREEN)
+        elif state == "sleeping":
+            self.status_pill.set("Resting  ·  wakes on use", TEXT_2, SURFACE_2, dot=GREEN)
         elif state == "busy":
             self.status_pill.set("Working…", ACCENT, K.ACCENT_SOFT, dot=ACCENT)
         elif state == "loading":
@@ -469,11 +564,80 @@ class Dashboard(_Window):
             self.status_pill.set("On-device  ·  Private", TEXT_2, SURFACE_2, dot=GREEN)
         self.after(700, self._poll_status)
 
+    # -- Welcome (interactive tutorial) --------------------------------------------
+
+    def _build_welcome(self, page):
+        fix_keys = C.get_hotkey_label("fix")
+        pol_keys = C.get_hotkey_label("polish")
+        label(page, "Let's try it once", "display").pack(fill="x")
+        label(page, "Fixelect works in every app — here is a safe place to practise. Takes 20 seconds.",
+              "body", TEXT_2, wrap=580).pack(fill="x", pady=(px(4), px(16)))
+
+        self._tut_steps = []
+        for n, (title, how) in enumerate((
+            ("Fix the typos", f"Select all the text in the box ({MOD}+A), then press {fix_keys}."),
+            ("Polish it", f"Select it again and press {pol_keys}. A preview opens — press Enter to replace."),
+        ), 1):
+            card = Card(page, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=12)
+            card.pack(fill="x", pady=(0, px(8)))
+            row = tk.Frame(card.body, bg=SURFACE)
+            row.pack(fill="x")
+            badge = Pill(row, str(n), fg=ACCENT, fill=K.ACCENT_SOFT, height=24)
+            badge.pack(side="left", padx=(0, px(12)))
+            txt = tk.Frame(row, bg=SURFACE)
+            txt.pack(side="left", fill="x", expand=True)
+            label(txt, title, "body_b").pack(fill="x")
+            note = label(txt, how, "small", TEXT_2, wrap=500)
+            note.pack(fill="x", pady=(px(2), 0))
+            self._tut_steps.append((badge, note))
+
+        self.tut_box = TextBox(page, height=4)
+        self.tut_box.set(TUTORIAL_TEXT)
+        self.tut_box.pack(fill="x", pady=(px(8), 0))
+        self._tut_last = TUTORIAL_TEXT
+        self._tut_stage = 0
+
+        foot = tk.Frame(page, bg=BG)
+        foot.pack(side="bottom", fill="x")
+        Button(foot, "Skip", self._finish_tutorial, "ghost", height=36).pack(side="left")
+        self.tut_done = Button(foot, "Start using Fixelect", self._finish_tutorial, "primary", height=36)
+        self.tut_done.pack(side="right")
+        self.tut_hint = label(foot, "", "small", TEXT_2)
+        self.tut_hint.pack(side="right", padx=px(12))
+        self._paint_tutorial()
+        self.after(400, self._watch_tutorial)
+        self.after(600, lambda: self.tut_box.text.focus_set())
+
+    def _paint_tutorial(self):
+        for i, (badge, _note) in enumerate(self._tut_steps):
+            if i < self._tut_stage:
+                badge.set("✓", GREEN, GREEN_SOFT)
+            elif i == self._tut_stage:
+                badge.set(str(i + 1), ACCENT, K.ACCENT_SOFT)
+            else:
+                badge.set(str(i + 1), TEXT_3, SURFACE_3)
+
+    def _watch_tutorial(self):
+        if self.current == "Welcome":
+            now = self.tut_box.get()
+            if now != self._tut_last and now.strip() and self._tut_stage < 2:
+                self._tut_last = now
+                self._tut_stage += 1
+                self._paint_tutorial()
+                self.tut_hint.configure(
+                    text="Nice — fixed in place." if self._tut_stage == 1 else "Perfect. You're ready.", fg=GREEN)
+        self.after(400, self._watch_tutorial)
+
+    def _finish_tutorial(self):
+        C.update_config(onboarding_done=True)
+        self.show("Playground")
+
     # -- Playground ---------------------------------------------------------------
 
     def _build_playground(self, page):
         label(page, "Try it", "title").pack(fill="x")
-        label(page, "Paste any text, then fix or polish it. Nothing leaves this computer.", "small", TEXT_2).pack(fill="x", pady=(px(3), px(12)))
+        label(page, "Paste any text, then fix or polish it. Nothing leaves this computer.", "small",
+              TEXT_2).pack(fill="x", pady=(px(3), px(12)))
         self.input = TextBox(page, height=6)
         self.input.set(SAMPLE)
         self.input.pack(fill="x")
@@ -507,7 +671,8 @@ class Dashboard(_Window):
         self._busy = True
         for b in (self.btn_fix, self.btn_pol, self.btn_copy):
             b.set_state("disabled")
-        self.meta.configure(text="Working…", fg=TEXT_2)
+        style = _styles().get(C.load_config().get("polish_style", "professional"), {}).get("label", "")
+        self.meta.configure(text="Working…" if mode == "fix" else f"Polishing ({style})…", fg=TEXT_2)
         started = time.time()
 
         def work():
@@ -562,7 +727,7 @@ class Dashboard(_Window):
         self._summary = {}
         for col, (mode, title, desc, color) in enumerate((
             ("fix", "Fix", "Typos and grammar. Keeps your voice.", ACCENT),
-            ("polish", "Polish", "Rewrites into clear, professional prose.", CORAL),
+            ("polish", "Polish", "Rewrites in your chosen style, with a preview.", CORAL),
         )):
             card = Card(summary, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=14)
             card.grid(row=0, column=col, sticky="ew", padx=(0, px(6)) if col == 0 else (px(6), 0))
@@ -574,7 +739,7 @@ class Dashboard(_Window):
             label(head, title, "body_b").pack(side="left")
             holder = tk.Frame(card.body, bg=SURFACE)
             holder.pack(fill="x", pady=(px(10), px(8)))
-            label(card.body, desc, "small", TEXT_2, wrap=230).pack(fill="x")
+            label(card.body, desc, "small", TEXT_2, wrap=240).pack(fill="x")
             self._summary[mode] = holder
         self._render_summary(cfg)
 
@@ -605,7 +770,7 @@ class Dashboard(_Window):
                 on_end=lambda: self.services.suspend_hotkeys(False),
             )
             rec.pack(side="left")
-        self.shortcut_status = label(page, "", "small", TEXT_2, wrap=560)
+        self.shortcut_status = label(page, "", "small", TEXT_2, wrap=580)
         self.shortcut_status.pack(fill="x", pady=(px(12), 0))
         note = "Quit from the menu bar icon." if IS_MAC else "Ctrl + Alt + Q quits Fixelect from anywhere."
         label(page, note, "caption", TEXT_3).pack(side="bottom", fill="x")
@@ -624,11 +789,7 @@ class Dashboard(_Window):
             card.fill = ACCENT_SOFT if sel else SURFACE
             card.hover_fill = ACCENT_SOFT if sel else SURFACE_2
             card.set_style(border=ACCENT if sel else BORDER)
-            dot.delete("all")
-            s, m = px(16), px(2)
-            dot.create_oval(m, m, s - m, s - m, outline=ACCENT if sel else K.BORDER_STRONG, width=px(2))
-            if sel:
-                dot.create_oval(px(5), px(5), s - px(5), s - px(5), fill=ACCENT, outline=ACCENT)
+            _radio(dot, sel)
         if self.trigger == "custom":
             self.custom_panel.pack(fill="x", after=self._options["custom"][0])
         else:
@@ -662,19 +823,107 @@ class Dashboard(_Window):
         else:
             self.shortcut_status.configure(text="✓  Shortcuts are active in every app.", fg=GREEN)
 
+    # -- Writing ----------------------------------------------------------------------
+
+    def _build_writing(self, page):
+        body = self._scroll_page(page)
+        cfg = C.load_config()
+        label(body, "Polish style", "title").pack(fill="x")
+        label(body, "How Polish rewrites your text. You can also switch styles in the preview.", "small",
+              TEXT_2).pack(fill="x", pady=(px(3), px(10)))
+        self._style = cfg.get("polish_style", "professional")
+        self._style_cards = {}
+        for key, spec in _styles().items():
+            card = Card(body, fill=SURFACE, border=BORDER, radius=10, padx=14, pady=10,
+                        hover_fill=SURFACE_2, command=lambda k=key: self._choose_style(k))
+            card.pack(fill="x", pady=(0, px(6)))
+            dot = tk.Canvas(card.body, width=px(16), height=px(16), bg=SURFACE, highlightthickness=0, bd=0)
+            dot.pack(side="left", padx=(0, px(12)))
+            label(card.body, spec["label"], "body_b").pack(side="left")
+            label(card.body, spec["desc"], "small", TEXT_2).pack(side="right")
+            self._style_cards[key] = (card, dot)
+        self._paint_styles()
+
+        note = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=14)
+        note.pack(fill="x", pady=(px(10), 0))
+        nhead = tk.Frame(note.body, bg=SURFACE)
+        nhead.pack(fill="x")
+        label(nhead, "Your style note", "body_b").pack(side="left")
+        self.custom_status = label(nhead, "", "small", TEXT_3)
+        self.custom_status.pack(side="right")
+        label(note.body, "Optional. Applied to every polish, e.g. “Use British spelling” or “Keep it upbeat”.",
+              "small", TEXT_2, wrap=520).pack(fill="x", pady=(px(2), px(10)))
+        field = Card(note.body, fill=FIELD, border=BORDER, radius=8, padx=10, pady=7)
+        field.pack(fill="x")
+        self.custom_entry = tk.Entry(field.body, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat",
+                                     bd=0, highlightthickness=0, font=K.FONTS["body"])
+        self.custom_entry.insert(0, cfg.get("custom_instruction", ""))
+        self.custom_entry.pack(fill="x")
+        K.layout_independent_shortcuts(self.custom_entry)
+        self.custom_entry.bind("<FocusIn>", lambda e: field.set_style(border=ACCENT))
+        self.custom_entry.bind("<FocusOut>", lambda e: (field.set_style(border=BORDER), self._save_custom_note()))
+        self.custom_entry.bind("<Return>", lambda e: self._save_custom_note())
+
+        prefs = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=6)
+        prefs.pack(fill="x", pady=(px(10), 0))
+        langs = "Spanish, French, German, Portuguese, Italian, Russian and Ukrainian"
+        self._wvars = {}
+        for i, (key, title, desc) in enumerate((
+            ("polish_preview", "Preview before replacing", "See the polished text first. Enter replaces, Esc cancels."),
+            ("multilingual", "Other languages", f"Also fix {langs}. English uses the most thorough checks."),
+            ("keep_formatting", "Keep formatting", "Bold, links and fonts survive in Word, Outlook, Docs and Gmail."),
+            ("hud_enabled", "On-screen feedback", "A small card near your text shows progress, results and Undo."),
+        )):
+            var = tk.BooleanVar(master=self.win, value=bool(cfg.get(key, True)))
+            self._wvars[key] = var
+            _pref_row(prefs.body, var, title, desc, lambda k=key: self._save_bool(k, self._wvars[k]), first=i == 0)
+
+    def _paint_styles(self):
+        for key, (card, dot) in self._style_cards.items():
+            sel = key == self._style
+            card.fill = ACCENT_SOFT if sel else SURFACE
+            card.hover_fill = ACCENT_SOFT if sel else SURFACE_2
+            card.set_style(border=ACCENT if sel else BORDER)
+            _radio(dot, sel)
+
+    def _choose_style(self, key):
+        self._style = key
+        C.update_config(polish_style=key)
+        self._paint_styles()
+        self.services.prefs_changed()
+
+    def _save_custom_note(self):
+        from check_guard import MAX_CUSTOM_INSTRUCTION
+        value = " ".join(self.custom_entry.get().split())[:MAX_CUSTOM_INSTRUCTION]
+        if value != C.load_config().get("custom_instruction", ""):
+            C.update_config(custom_instruction=value)
+            self.custom_status.configure(text="Saved." if value else "Cleared.", fg=GREEN)
+            self.after(1500, lambda: self.custom_status.configure(text=""))
+
+    def _save_bool(self, key, var):
+        C.update_config(**{key: bool(var.get())})
+        self.services.prefs_changed()
+
     # -- Model ------------------------------------------------------------------------
 
     def _build_model(self, page):
         hw = H.detect_hardware()
         label(page, "AI model", "title").pack(fill="x")
         label(page, _hw_line(hw), "small", TEXT_2).pack(fill="x", pady=(px(3), px(14)))
-        ModelPicker(page, self, self.services, list_height=380).pack(fill="x")
+        ModelPicker(page, self, self.services, list_height=390).pack(fill="x")
 
     # -- General ----------------------------------------------------------------------
 
     def _build_general(self, page):
+        foot = tk.Frame(page, bg=BG)
+        foot.pack(side="bottom", fill="x", pady=(px(10), 0))
+        Button(foot, "Privacy & licenses", lambda: PrivacyWindow(self.win), "secondary", height=34).pack(side="left")
+        label(foot, f"  Fixelect {APP_VERSION}", "caption", TEXT_3).pack(side="left", padx=px(8))
+        Button(foot, "Quit Fixelect", self._quit, "danger", height=34).pack(side="right")
+        body = self._scroll_page(page, 470)
         cfg = C.load_config()
-        prefs = Card(page, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=6)
+
+        prefs = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=6)
         prefs.pack(fill="x")
         rows = [
             ("sound", "Sound feedback", "A soft chime when your text is replaced.", cfg.get("sound_enabled", True)),
@@ -687,19 +936,56 @@ class Dashboard(_Window):
                          cfg.get("prefetch_enabled", False)))
         self._vars = {}
         for i, (key, title, desc, value) in enumerate(rows):
-            if i:
-                tk.Frame(prefs.body, bg=BORDER, height=1).pack(fill="x")
-            r = tk.Frame(prefs.body, bg=SURFACE)
-            r.pack(fill="x", pady=px(10))
             var = tk.BooleanVar(master=self.win, value=bool(value))
             self._vars[key] = var
-            Toggle(r, var, command=lambda k=key: self._save_pref(k)).pack(side="right")
-            txt = tk.Frame(r, bg=SURFACE)
-            txt.pack(side="left", fill="x", expand=True)
-            label(txt, title, "body_b").pack(fill="x")
-            label(txt, desc, "small", TEXT_2, wrap=440).pack(fill="x", pady=(px(2), 0))
+            _pref_row(prefs.body, var, title, desc, lambda k=key: self._save_pref(k), first=i == 0)
 
-        words = Card(page, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=14)
+        mem = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=14)
+        mem.pack(fill="x", pady=(px(12), 0))
+        label(mem.body, "Free memory when idle", "body_b").pack(fill="x")
+        label(mem.body, "The AI model uses 1–4 GB. Fixelect unloads it after a break and reloads it in "
+                        "a few seconds on your next fix.", "small", TEXT_2, wrap=540).pack(fill="x", pady=(px(2), px(10)))
+        current = int(cfg.get("unload_minutes", 10) or 0)
+        Segmented(mem.body, IDLE_OPTIONS, current if current in dict(IDLE_OPTIONS) else 10,
+                  lambda v: (C.update_config(unload_minutes=v), self.services.prefs_changed())).pack(anchor="w")
+
+        off = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=14)
+        off.pack(fill="x", pady=(px(12), 0))
+        head = tk.Frame(off.body, bg=SURFACE)
+        head.pack(fill="x")
+        label(head, "Turned off in", "body_b").pack(side="left")
+        self.add_app_btn = Button(head, "Add app…", self._pick_app, "secondary", height=28,
+                                  font=K.FONTS["small_b"], padx=12)
+        self.add_app_btn.pack(side="right")
+        label(off.body, "Fixelect ignores the shortcuts in these apps (terminals and password managers by default).",
+              "small", TEXT_2, wrap=540).pack(fill="x", pady=(px(2), px(8)))
+        self.app_chips = Chips(off.body, self._remove_app)
+        self.app_chips.pack(fill="x")
+        self._render_apps()
+
+        upd = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=6)
+        upd.pack(fill="x", pady=(px(12), 0))
+        self._upd_var = tk.BooleanVar(master=self.win, value=bool(cfg.get("check_updates", True)))
+        _pref_row(upd.body, self._upd_var, "Check for updates",
+                  "Once a day, asks GitHub whether a newer Fixelect exists. Nothing about you is sent.",
+                  lambda: self._save_bool("check_updates", self._upd_var), first=True)
+        tk.Frame(upd.body, bg=BORDER, height=1).pack(fill="x")
+        urow = tk.Frame(upd.body, bg=SURFACE)
+        urow.pack(fill="x", pady=px(10))
+        self.upd_btn = Button(urow, "Check now", self._update_action, "secondary", height=30,
+                              font=K.FONTS["small_b"], padx=12)
+        self.upd_btn.pack(side="right")
+        ubox = tk.Frame(urow, bg=SURFACE)
+        ubox.pack(side="left", fill="x", expand=True, padx=(0, px(12)))
+        self.upd_label = label(ubox, f"You have Fixelect {APP_VERSION}.", "small", TEXT_2, wrap=420)
+        self.upd_label.pack(fill="x")
+        self.upd_progress = ProgressBar(ubox)
+        self._upd_cancel = None
+        info = self.services.update_info()
+        if info:
+            self._show_update(info)
+
+        words = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=14)
         words.pack(fill="x", pady=(px(12), 0))
         label(words.body, "Protected words", "body_b").pack(fill="x")
         label(words.body, "Names and jargon Fixelect will never change.", "small", TEXT_2).pack(fill="x", pady=(px(2), px(10)))
@@ -715,16 +1001,9 @@ class Dashboard(_Window):
         self.word_entry.bind("<FocusIn>", lambda e: field.set_style(border=ACCENT))
         self.word_entry.bind("<FocusOut>", lambda e: field.set_style(border=BORDER))
         Button(add, "Add", self._add_word, "secondary", width=70, height=32).pack(side="right")
-        self.chips = tk.Text(words.body, height=3, bg=SURFACE, relief="flat", bd=0, highlightthickness=0,
-                             wrap="word", cursor="arrow", font=K.FONTS["small"], fg=TEXT_3)
+        self.chips = Chips(words.body, self._remove_word)
         self.chips.pack(fill="x", pady=(px(10), 0))
         self._render_words()
-
-        foot = tk.Frame(page, bg=BG)
-        foot.pack(side="bottom", fill="x")
-        Button(foot, "Privacy & licenses", lambda: PrivacyWindow(self.win), "secondary", height=34).pack(side="left")
-        label(foot, f"  Fixelect {APP_VERSION}  ·  100% offline", "caption", TEXT_3).pack(side="left", padx=px(8))
-        Button(foot, "Quit Fixelect", self._quit, "danger", height=34).pack(side="right")
 
     def _save_pref(self, key):
         v = self._vars[key].get()
@@ -737,20 +1016,116 @@ class Dashboard(_Window):
             C.update_config(prefetch_enabled=v)
         self.services.prefs_changed()
 
+    # per-app off switch
+
+    def _render_apps(self):
+        apps = C.load_config().get("disabled_apps", [])
+        self.app_chips.render([(a, A.display_name(a)) for a in apps],
+                              trailing="" if apps else "Fixelect works in every app.")
+
+    def _remove_app(self, app_id):
+        cfg = C.load_config()
+        C.update_config(disabled_apps=[a for a in cfg.get("disabled_apps", []) if a != app_id])
+        self._render_apps()
+
+    def _add_app(self, app_id):
+        cfg = C.load_config()
+        apps = cfg.get("disabled_apps", [])
+        if app_id not in apps:
+            C.update_config(disabled_apps=apps + [app_id])
+        self._render_apps()
+
+    def _pick_app(self):
+        current = set(C.load_config().get("disabled_apps", []))
+        menu = tk.Menu(self.win, tearoff=0, bg=SURFACE_2, fg=TEXT, activebackground=ACCENT,
+                       activeforeground="#FFFFFF", bd=0, font=K.FONTS["body"])
+        running = [(k, n) for k, n in A.list_open_apps() if k not in current]
+        if running:
+            menu.add_command(label="Open apps", state="disabled")
+            for key, name in running[:20]:
+                menu.add_command(label="   " + name, command=lambda k=key: self._add_app(k))
+            menu.add_separator()
+        suggestions = [k for k in A.SUGGESTED if k not in current and k not in dict(running)]
+        if suggestions:
+            menu.add_command(label="Suggestions", state="disabled")
+            for key in suggestions[:14]:
+                menu.add_command(label="   " + A.display_name(key), command=lambda k=key: self._add_app(k))
+        b = self.add_app_btn
+        try:
+            menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height() + px(4))
+        finally:
+            menu.grab_release()
+
+    # updates
+
+    def _show_update(self, info):
+        self._update = info
+        self.upd_label.configure(text=f"Fixelect {info['version']} is available.", fg=ACCENT)
+        self.upd_btn.set_text("Install update" if not IS_MAC else "Get update")
+        self.upd_btn.set_variant("primary")
+
+    def _update_action(self):
+        info = getattr(self, "_update", None)
+        if self._upd_cancel is not None:
+            self._upd_cancel.set()
+            return
+        if info:
+            self._install_update(info)
+            return
+        self.upd_btn.set_state("disabled")
+        self.upd_label.configure(text="Checking…", fg=TEXT_2)
+
+        def work():
+            found, err = self.services.check_updates()
+            self.post(lambda: self._update_checked(found, err))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_checked(self, info, err):
+        if not self.alive:
+            return
+        self.upd_btn.set_state("normal")
+        if err:
+            self.upd_label.configure(text=err, fg=RED)
+        elif info:
+            self._show_update(info)
+        else:
+            self.upd_label.configure(text=f"You're up to date (Fixelect {APP_VERSION}).", fg=GREEN)
+
+    def _install_update(self, info):
+        if IS_MAC:
+            self.services.install_update(info, None, None)
+            return
+        self._upd_cancel = threading.Event()
+        cancel = self._upd_cancel
+        self.upd_btn.set_text("Cancel")
+        self.upd_btn.set_variant("secondary")
+        self.upd_label.configure(text="Downloading the update…", fg=TEXT_2)
+        self.upd_progress.pack(fill="x", pady=(px(6), 0))
+
+        def progress(done, total):
+            self.post(lambda: self.upd_progress.set(done / total if total else 0))
+
+        def work():
+            try:
+                self.services.install_update(info, progress, cancel)
+                self.post(lambda: self.upd_label.configure(text="Installing… Fixelect restarts by itself.", fg=GREEN))
+            except Exception as e:
+                msg = str(e) or type(e).__name__
+                self.post(lambda: self._update_failed(msg))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_failed(self, msg):
+        self._upd_cancel = None
+        self.upd_progress.pack_forget()
+        self.upd_label.configure(text=msg, fg=RED)
+        self.upd_btn.set_text("Install update")
+        self.upd_btn.set_variant("primary")
+
+    # protected words
+
     def _render_words(self):
         from check_guard import get_user_words, BUILTIN_WORDS
-        t = self.chips
-        t.configure(state="normal")
-        t.delete("1.0", "end")
-        for w in get_user_words():
-            chip = tk.Frame(t, bg=SURFACE)
-            Pill(chip, w + "   ×", fg=TEXT, fill=SURFACE_3, height=24, font=K.FONTS["small"]).pack()
-            for child in [chip] + chip.winfo_children():
-                child.bind("<Button-1>", lambda e, word=w: self._remove_word(word))
-                child.configure(cursor="hand2")
-            t.window_create("end", window=chip, padx=px(2), pady=px(2))
-        t.insert("end", f"  +{len(BUILTIN_WORDS)} built-in")
-        t.configure(state="disabled")
+        self.chips.render([(w, w) for w in get_user_words()], trailing=f"+{len(BUILTIN_WORDS)} built-in")
 
     def _add_word(self):
         from check_guard import add_protected_word
@@ -767,6 +1142,64 @@ class Dashboard(_Window):
     def _quit(self):
         self.close()
         self.services.quit()
+
+    # -- Help ---------------------------------------------------------------------------
+
+    def _build_help(self, page):
+        foot = tk.Frame(page, bg=BG)
+        foot.pack(side="bottom", fill="x", pady=(px(10), 0))
+        self.diag_btn = Button(foot, "Copy diagnostics", self._copy_diagnostics, "secondary", height=34)
+        self.diag_btn.pack(side="left")
+        Button(foot, "Open log folder", lambda: _open_path(C.get_logs_dir()), "ghost", height=34).pack(side="left", padx=px(6))
+        Button(foot, "Replay tutorial", lambda: self.show("Welcome"), "ghost", height=34).pack(side="right")
+        body = self._scroll_page(page, 470)
+
+        label(body, "How it works", "title").pack(fill="x")
+        steps = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=10)
+        steps.pack(fill="x", pady=(px(10), px(16)))
+        for n, s in enumerate((
+            "Select text in any app.",
+            f"Press {C.get_hotkey_label('fix')} to fix it, or {C.get_hotkey_label('polish')} to polish it.",
+            "The text is replaced where it is. Undo from the card that appears, or with "
+            + ("⌘Z." if IS_MAC else "Ctrl+Z."),
+        ), 1):
+            r = tk.Frame(steps.body, bg=SURFACE)
+            r.pack(fill="x", pady=px(4))
+            Pill(r, str(n), fg=ACCENT, fill=K.ACCENT_SOFT, height=22).pack(side="left", padx=(0, px(10)))
+            label(r, s, "body", wrap=500).pack(side="left", fill="x")
+
+        label(body, "Why wasn't my text fixed?", "title").pack(fill="x")
+        faq = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=6)
+        faq.pack(fill="x", pady=(px(10), 0))
+        for i, (q, a) in enumerate(HELP_ITEMS):
+            if i:
+                tk.Frame(faq.body, bg=BORDER, height=1).pack(fill="x")
+            box = tk.Frame(faq.body, bg=SURFACE)
+            box.pack(fill="x", pady=px(9))
+            label(box, q, "body_b").pack(fill="x")
+            label(box, a, "small", TEXT_2, wrap=540).pack(fill="x", pady=(px(2), 0))
+        label(body, "Diagnostics contain your settings and recent errors — never your text.", "caption",
+              TEXT_3).pack(fill="x", pady=(px(10), 0))
+
+    def _copy_diagnostics(self):
+        self.diag_btn.set_state("disabled")
+
+        def work():
+            try:
+                text = self.services.diagnostics()
+            except Exception as e:
+                text = f"Could not collect diagnostics: {e}"
+            self.post(lambda: self._diagnostics_ready(text))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _diagnostics_ready(self, text):
+        if not self.alive:
+            return
+        self.win.clipboard_clear()
+        self.win.clipboard_append(text)
+        self.diag_btn.set_state("normal")
+        self.diag_btn.set_text("Copied")
+        self.after(1600, lambda: self.diag_btn.set_text("Copy diagnostics"))
 
 
 # ---------------------------------------------------------------------------
@@ -835,7 +1268,6 @@ class PermissionsWindow(_Window):
         self._poll()
 
     def _open_settings(self):
-        import subprocess
         try:
             subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
         except Exception:
@@ -881,7 +1313,8 @@ class PrivacyWindow(_Window):
 # ---------------------------------------------------------------------------
 
 class UIManager:
-    """Runs every Fixelect window on one dedicated Tk thread (Windows)."""
+    """Runs every Fixelect window, the status card and the Polish preview on
+    one dedicated Tk thread (Windows)."""
 
     def __init__(self, services):
         self.services = services
@@ -890,6 +1323,8 @@ class UIManager:
         self._thread = None
         self.root = None
         self.dashboard = None
+        self._hud = None
+        self.preview = None
 
     def _ensure(self):
         if self._thread is None:
@@ -921,18 +1356,20 @@ class UIManager:
     def post(self, fn):
         self._q.put(fn)
 
-    def open_dashboard(self):
-        self._ensure()
-        self.post(self._open_dashboard)
+    # dashboard
 
-    def _open_dashboard(self):
+    def open_dashboard(self, page=None):
+        self._ensure()
+        self.post(lambda: self._open_dashboard(page))
+
+    def _open_dashboard(self, page=None):
         if self.dashboard is not None and self.dashboard.alive:
-            self.dashboard.request_focus()
+            self.dashboard.request_focus(page)
             return
 
         def closed():
             self.dashboard = None
-        self.dashboard = Dashboard(self.root, self.services, self.post, on_close=closed)
+        self.dashboard = Dashboard(self.root, self.services, self.post, on_close=closed, page=page)
 
     def run_setup_blocking(self):
         self._ensure()
@@ -945,12 +1382,51 @@ class UIManager:
         done.wait()
         return result[0]
 
+    # status card & polish preview (Windows)
+
+    def warm_up(self):
+        """Start the UI thread and build the (hidden) status card now. Creating
+        Tk windows can briefly take focus, which must never happen mid-fix."""
+        self._ensure()
+        self.post(self._card)
+
+    def _card(self):
+        if self._hud is None:
+            from hud_win import Hud
+            self._hud = Hud(self.root)
+        return self._hud
+
+    def hud(self, **kw):
+        self._ensure()
+        self.post(lambda: self._card().show(**kw))
+
+    def hide_hud(self):
+        if self._hud is not None:
+            self.post(self._hud.hide)
+
+    def open_preview(self, styles, style, on_decision, anchor=None):
+        self._ensure()
+
+        def make():
+            from hud_win import PolishPreview
+            if self._hud is not None:
+                self._hud.hide()
+            self.preview = PolishPreview(self.root, styles, style, on_decision)
+            self.preview.present(anchor)
+        self.post(make)
+
+    def preview_result(self, before, after, note=""):
+        self.post(lambda: self.preview and self.preview.alive and self.preview.show_result(before, after, note))
+
+    def preview_error(self, message):
+        self.post(lambda: self.preview and self.preview.alive and self.preview.show_error(message))
+
     def stop(self):
         if self.root is not None:
             self.post(self.root.quit)
 
 
-def run_standalone(kind="dashboard", services=None):
+def run_standalone(kind="dashboard", services=None, page=None):
     """Run one window on the calling (main) thread until it closes. Returns its result."""
     root = tk.Tk()
     root.withdraw()
@@ -977,11 +1453,21 @@ def run_standalone(kind="dashboard", services=None):
         result[0] = value
         root.after(10, root.quit)
 
+    def focus_request():
+        target = None
+        try:
+            target = (C.get_config_dir() / "dashboard_page").read_text().strip() or None
+            (C.get_config_dir() / "dashboard_page").unlink()
+        except Exception:
+            pass
+        if win is not None and hasattr(win, "request_focus"):
+            win.request_focus(target) if isinstance(win, Dashboard) else win.request_focus()
+
     if IS_MAC:
         try:
             import signal
             # The menu-bar daemon sends SIGUSR1 to ask an open dashboard to come forward.
-            signal.signal(signal.SIGUSR1, lambda *_: post(lambda: win and getattr(win, "request_focus", lambda: None)()))
+            signal.signal(signal.SIGUSR1, lambda *_: post(focus_request))
         except Exception:
             pass
 
@@ -991,7 +1477,7 @@ def run_standalone(kind="dashboard", services=None):
     elif kind == "permissions":
         win = PermissionsWindow(root, done)
     else:
-        win = Dashboard(root, services, post, on_close=done)
+        win = Dashboard(root, services, post, on_close=done, page=page)
     root.after(30, pump)
     root.mainloop()
     try:

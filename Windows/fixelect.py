@@ -1,10 +1,10 @@
 """
-Fixelect for Windows — 100% Offline AI Grammar Correction & Executive Polish
+Fixelect for Windows — Offline AI Grammar Correction & Polish
 Hardware-Accelerated Local Inference (CUDA / Vulkan / AVX2) • Global Hotkeys • Fluent Dark UI
 
 Triggers (default):
   Alt x2 (Alt Alt)     ->  Proofread & fix grammar (voice preserved)
-  Ctrl x2 (Ctrl Ctrl)  ->  Professional polish
+  Ctrl x2 (Ctrl Ctrl)  ->  Polish (preview first, choose a style)
   Ctrl + Alt + Q       ->  Quit Fixelect
 Presets and custom shortcuts can be chosen in the dashboard.
 
@@ -17,7 +17,6 @@ import ctypes
 import ctypes.wintypes as wintypes
 import pathlib
 import queue
-import re
 import sys
 import threading
 import time
@@ -69,11 +68,17 @@ if getattr(sys, "frozen", False):
     if (_exe_dir / "tools").is_dir():
         sys.path.insert(0, str(_exe_dir / "tools"))
 else:
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "tools"))
+    _src = pathlib.Path(__file__).resolve().parent
+    sys.path.insert(0, str(_src.parent / "shared"))
+    sys.path.insert(0, str(_src / "tools"))
 
-from check_guard import BEAMS, MODELS, load_pipeline  # noqa: E402
+from check_guard import (  # noqa: E402
+    BEAMS, MODELS, POLISH_STYLES, load_pipeline, fix_preserving_layout, detect_language,
+    split_edges as _split_edges,
+)
 from config import (  # noqa: E402
     load_config,
+    update_config,
     get_config_dir,
     get_hotkey_label,
     parse_hotkey_string,
@@ -82,7 +87,12 @@ from config import (  # noqa: E402
 )
 from downloader import resolve_model  # noqa: E402
 from hotkey_win import WinHotkeyListener  # noqa: E402
+import apps_win as apps  # noqa: E402
+import chunking  # noqa: E402
 import clipboard_win as clip  # noqa: E402
+import languages  # noqa: E402
+import richtext  # noqa: E402
+from version import APP_VERSION  # noqa: E402
 
 MODEL = "qwen2.5"
 ENGINE = "embedded"
@@ -95,23 +105,26 @@ SETTLE_SECONDS = 0.4
 MIN_PREFETCH_CHARS = 8
 MAX_PREFETCH_CHARS = 600
 
-MAX_SELECTION_CHARS = 12000     # beyond this a local model would take minutes
+MAX_SELECTION_CHARS = 30000     # long text is chunked, shows progress and can be cancelled
 CLIPBOARD_RESTORE_DELAY = 0.8   # give slow apps (Word, Slack, IDEs) time to read the paste
+HUD_DELAY = 0.35                # only show "Fixing…" when it takes longer than this
+UNDO_WINDOW = 30.0
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x0008, 0x4000
 VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN = 0x11, 0x12, 0x10, 0x5B, 0x5C
-VK_C, VK_V, VK_F, VK_P, VK_Q, VK_SPACE = 0x43, 0x56, 0x46, 0x50, 0x51, 0x20
+VK_C, VK_V, VK_Z, VK_F, VK_P, VK_Q, VK_SPACE, VK_ESCAPE = 0x43, 0x56, 0x5A, 0x46, 0x50, 0x51, 0x20, 0x1B
 VK_MASK = 0xE8  # unassigned key: breaks "lone Win/Alt release" menu activation
 KEYEVENTF_KEYUP = 0x0002
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
 WM_APP_RELOAD_HOTKEYS = 0x8000 + 10
 WM_APP_SUSPEND_HOTKEYS = 0x8000 + 11
+WM_APP_CANCEL_KEY = 0x8000 + 12
 ID_FIX, ID_POLISH, ID_QUIT = 1001, 1002, 1003
-ID_FALLBACK_FIX, ID_FALLBACK_POLISH = 1004, 1005
+ID_FALLBACK_FIX, ID_FALLBACK_POLISH, ID_CANCEL = 1004, 1005, 1006
 ALL_HOTKEY_IDS = (ID_FIX, ID_POLISH, ID_QUIT, ID_FALLBACK_FIX, ID_FALLBACK_POLISH)
 
 IDC_WAIT = 32514
@@ -126,6 +139,7 @@ user32.LoadImageW.argtypes = [wintypes.HINSTANCE, ctypes.c_void_p, wintypes.UINT
 user32.CopyImage.restype = wintypes.HANDLE
 user32.CopyImage.argtypes = [wintypes.HANDLE, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
 user32.SetSystemCursor.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+user32.GetForegroundWindow.restype = wintypes.HWND
 kernel32.CreateMutexW.restype = wintypes.HANDLE
 kernel32.CreateEventW.restype = wintypes.HANDLE
 kernel32.OpenEventW.restype = wintypes.HANDLE
@@ -181,13 +195,6 @@ def play_fix_sound(mode="fix"):
 
 
 # --------------------------------------------------------------------------
-# Text layout
-# --------------------------------------------------------------------------
-
-from check_guard import fix_preserving_layout, is_probably_english, split_edges as _split_edges  # noqa: E402
-
-
-# --------------------------------------------------------------------------
 # Single instance
 # --------------------------------------------------------------------------
 
@@ -220,7 +227,7 @@ def ensure_single_instance(on_show_callback):
 
 
 # --------------------------------------------------------------------------
-# Cursor
+# Cursor (fallback feedback when the on-screen card is turned off)
 # --------------------------------------------------------------------------
 
 _cursor_busy = False
@@ -241,6 +248,8 @@ def show_busy_cursor():
 
 def restore_cursor():
     global _cursor_busy
+    if not _cursor_busy:
+        return
     try:
         user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, 0)
     except Exception:
@@ -248,7 +257,7 @@ def restore_cursor():
     _cursor_busy = False
 
 
-atexit.register(lambda: _cursor_busy and restore_cursor())
+atexit.register(restore_cursor)
 
 
 # --------------------------------------------------------------------------
@@ -313,15 +322,13 @@ def copy_selection():
     return False
 
 
-def bring_window_to_front(hwnd):
-    if not hwnd:
-        return
-    try:
-        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-        user32.SetForegroundWindow(hwnd)
-        user32.SwitchToThisWindow(hwnd, True)
-    except Exception:
-        pass
+def wait_for_foreground(hwnd, timeout=0.8):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if user32.GetForegroundWindow() == hwnd:
+            return True
+        time.sleep(0.02)
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -366,6 +373,15 @@ class SelectionReader:
             return None
 
 
+def supported_languages_line():
+    names = ["English"] + [languages.NAMES[c] for c in languages.SUPPORTED]
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def plural(n, word):
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
 # --------------------------------------------------------------------------
 # The application
 # --------------------------------------------------------------------------
@@ -382,15 +398,18 @@ class FixelectApp:
         self.hotkey_errors = []
         self.main_thread_id = kernel32.GetCurrentThreadId()
         self.prefetch_on = threading.Event()
+        self.cancel_event = threading.Event()
         self._restore_lock = threading.Lock()
         self._restore_timer = None
         self._pending_restore = None
         self._last_hotkey_done = 0.0
+        self._undo = None
+        self.update_info = None
         self.tray = None
         self.ui = None
         self.listener = None
 
-    # -- status & notifications ----------------------------------------------
+    # -- status, notifications, on-screen card -----------------------------------
 
     def set_status(self, state, detail=""):
         self.status_info.update(state=state, detail=detail)
@@ -411,6 +430,19 @@ class FixelectApp:
         if self.tray:
             self.tray.notify(title, message)
 
+    def hud(self, kind, title, detail="", actions=(), timeout=None, progress=None, anchor=None):
+        """Show the status card (or a tray balloon when the card is turned off)."""
+        if not load_config().get("hud_enabled", True) or self.ui is None:
+            if kind in ("error", "info"):
+                self.notify(title, detail or title)
+            return
+        self.ui.hud(kind=kind, title=title, detail=detail, actions=actions, timeout=timeout,
+                    progress=progress, anchor=anchor)
+
+    def hide_hud(self):
+        if self.ui is not None:
+            self.ui.hide_hud()
+
     # -- engine -----------------------------------------------------------------
 
     def _load_engine(self):
@@ -425,6 +457,10 @@ class FixelectApp:
             self.set_status("error", str(e))
             return False
 
+    def _engine(self):
+        from engine import get_default_engine
+        return get_default_engine()
+
     def _switch_model(self, profile):
         from engine import get_default_engine
         self.set_status("loading", "Switching model…")
@@ -437,6 +473,29 @@ class FixelectApp:
         if self.status_info["state"] == "ready":
             from downloader import MODELS as DL_MODELS
             self.notify("Model ready", f"Fixelect now uses {DL_MODELS.get(profile, {}).get('short_name', profile)}.")
+
+    def _unload_if_idle(self):
+        minutes = float(load_config().get("unload_minutes", 10) or 0)
+        if ENGINE != "embedded" or minutes <= 0 or self.fix is None:
+            return
+        eng = self._engine()
+        if eng.owns_server() and eng.idle_seconds() >= minutes * 60 and eng.unload():
+            self.cache.clear()
+            self.set_status("sleeping", "Model unloaded to free memory")
+            log_error(f"model unloaded after {minutes:g} idle minutes")
+
+    def _wake_engine(self, show_card=True):
+        """Load the model again after an idle unload, with visible feedback."""
+        if ENGINE != "embedded":
+            return
+        eng = self._engine()
+        if eng.is_running():
+            return
+        if show_card:
+            self.hud("working", "Waking up the AI model…", "This takes a few seconds after a break.")
+        self.set_status("loading", "Loading the AI model…")
+        eng.ensure_running()
+        self.set_status("ready", "Ready")
 
     # -- clipboard restore ---------------------------------------------------------
 
@@ -477,13 +536,14 @@ class FixelectApp:
     # -- jobs ----------------------------------------------------------------------
 
     def trigger(self, mode):
-        show_busy_cursor()
+        if not load_config().get("hud_enabled", True):
+            show_busy_cursor()
         self.jobs.put((mode, None, time.time()))
 
-    def run_fix_sync(self, text, mode="fix", timeout=240):
+    def run_fix_sync(self, text, mode="fix", timeout=600, style=None):
         """Used by the dashboard playground: runs on the worker, returns fixed text."""
         reply = queue.Queue()
-        self.jobs.put(("playground", (text, mode, reply), time.time()))
+        self.jobs.put(("playground", (text, mode, style, reply), time.time()))
         ok, value = reply.get(timeout=timeout)
         if not ok:
             raise RuntimeError(value)
@@ -503,6 +563,10 @@ class FixelectApp:
                     self._switch_model(payload)
                 elif kind == "playground":
                     self._do_playground(*payload)
+                elif kind == "undo":
+                    self._do_undo(payload)
+                elif kind == "unload":
+                    self._unload_if_idle()
                 elif kind in ("fix", "polish"):
                     if queued_at < self._last_hotkey_done:
                         continue  # pressed again while the previous one was running
@@ -514,24 +578,34 @@ class FixelectApp:
             except Exception as e:
                 log_error(f"job {kind} failed: {type(e).__name__}: {e}")
                 if kind in ("fix", "polish"):
-                    self.notify("Fixelect couldn't finish", str(e) or type(e).__name__)
+                    self.set_status("ready" if self.fix else "error", "")
+                    self.hud("error", "Fixelect couldn't finish", str(e) or type(e).__name__,
+                             actions=[("Help", lambda: self.open_dashboard("Help"))], timeout=7000)
 
     def _ensure_fix(self):
         if self.fix is None and not self._load_engine():
             raise RuntimeError(self.status_info.get("detail") or "The AI engine is not available.")
         return self.fix
 
-    def _run(self, text, mode):
+    def _options(self, cfg, mode, style=None, variant=0, info=None):
+        return dict(style=style or cfg.get("polish_style", "professional"),
+                    custom=cfg.get("custom_instruction", "") if mode == "polish" else "",
+                    multilingual=bool(cfg.get("multilingual", True)), variant=variant, info=info)
+
+    def _run(self, text, mode, opts, progress=None, cancel=None):
         fix = self._ensure_fix()
+        self._wake_engine(show_card=False)
         self.set_status("busy", "Working…")
         try:
-            return fix_preserving_layout(text, lambda t: fix(t, mode=mode), mode=mode)
+            return chunking.process(text, lambda t: fix(t, mode=mode, **opts), mode=mode,
+                                    progress=progress, cancel=cancel)
         finally:
             self.set_status("ready", "Ready")
 
-    def _do_playground(self, text, mode, reply):
+    def _do_playground(self, text, mode, style, reply):
         try:
-            reply.put((True, self._run(text, mode)[0]))
+            cfg = load_config()
+            reply.put((True, self._run(text, mode, self._options(cfg, mode, style))))
         except Exception as e:
             reply.put((False, str(e)))
 
@@ -539,7 +613,10 @@ class FixelectApp:
         if self.fix is None or text in self.cache or not self.prefetch_on.is_set():
             return
         try:
-            self.cache[text] = fix_preserving_layout(text, lambda t: self.fix(t, mode="fix"))[0]
+            if not self._engine().is_running():
+                return  # never wake a sleeping model just to guess
+            opts = self._options(load_config(), "fix")
+            self.cache[text] = fix_preserving_layout(text, lambda t: self.fix(t, mode="fix", **opts))[0]
             while len(self.cache) > 20:
                 self.cache.pop(next(iter(self.cache)))
         except Exception:
@@ -557,9 +634,28 @@ class FixelectApp:
         for job in kept:
             self.jobs.put(job)
 
+    # -- the hotkey path ------------------------------------------------------------
+
+    def _enable_app(self, exe):
+        cfg = load_config()
+        update_config(disabled_apps=[a for a in cfg.get("disabled_apps", []) if a.lower() != exe.lower()])
+        self.hud("success", f"Fixelect is on in {apps.display_name(exe)}", "Use the shortcut again.", timeout=2500)
+
     def _do_hotkey(self, mode):
-        show_busy_cursor()
+        cfg = load_config()
+        hwnd, exe, pid = apps.foreground()
+        if apps.is_disabled(exe, cfg, pid):
+            self.hud("info", f"Fixelect is off in {apps.display_name(exe)}",
+                     "You turned it off for this app in Settings.",
+                     actions=[("Turn on here", lambda: self._enable_app(exe))], timeout=4500)
+            return
         self._drop_queued_prefetch()
+        anchor = None
+        try:
+            from hud_win import caret_point
+            anchor = caret_point()
+        except Exception:
+            pass
 
         original, _ = self._take_pending_restore()
         if original is None:
@@ -567,46 +663,200 @@ class FixelectApp:
 
         settle_modifiers()
         if not copy_selection():
-            print("  ! nothing selected")
             self._schedule_restore(original, 0.05)
+            self.hud("info", "Select some text first",
+                     "Highlight the words you want to " + ("fix" if mode == "fix" else "polish")
+                     + ", then use the shortcut again.", timeout=3500, anchor=anchor)
             return
 
         text = clip.get_text()
+        html = clip.get_html() if cfg.get("keep_formatting", True) else None
         if not text or not text.strip():
             self._schedule_restore(original, 0.05)
+            self.hud("info", "Nothing to fix here", "The selection has no text (an image or a file?).",
+                     timeout=3000, anchor=anchor)
             return
         if len(text) > MAX_SELECTION_CHARS:
             self._schedule_restore(original, 0.05)
-            self.notify("Selection too long", f"Select fewer than {MAX_SELECTION_CHARS:,} characters at a time.")
-            return
-        if not is_probably_english(text):
-            self._schedule_restore(original, 0.05)
-            self.notify("Only English for now", "Fixelect leaves text in other languages unchanged.")
+            self.hud("info", "That selection is very long",
+                     f"Select up to {MAX_SELECTION_CHARS:,} characters at a time.", timeout=4500, anchor=anchor)
             return
 
-        started = time.time()
-        lead, core, trail = _split_edges(text)
-        cached = self.cache.get(core) if (mode == "fix" and "\n" not in core) else None
-        if cached is not None:
-            fixed, note = lead + cached + trail, " (prepared)"
+        lang = detect_language(text)
+        if lang != "en" and (lang not in languages.SUPPORTED or not cfg.get("multilingual", True)):
+            self._schedule_restore(original, 0.05)
+            name = languages.NAMES.get(lang, "This language")
+            if lang in languages.SUPPORTED:
+                self.hud("info", f"{name} is turned off", "Turn on other languages in Settings → Writing.",
+                         actions=[("Settings", lambda: self.open_dashboard("Writing"))], timeout=5000, anchor=anchor)
+            else:
+                self.hud("info", f"{name if lang != 'other' else 'This language'} isn't supported yet",
+                         f"Fixelect works in {supported_languages_line()}.", timeout=5500, anchor=anchor)
+            return
+
+        if mode == "polish" and cfg.get("polish_preview", True):
+            fixed = self._polish_with_preview(text, cfg, hwnd, anchor)
+            if fixed is None:
+                self._schedule_restore(original, 0.05)
+                return
+            info = {}
         else:
-            fixed, note = self._run(text, mode)[0], ""
-        took = (time.time() - started) * 1000
+            fixed, info = self._compute(text, mode, cfg, anchor)
+            if fixed is None:  # cancelled
+                self._schedule_restore(original, 0.05)
+                self.hud("info", "Cancelled", "Your text was not changed.", timeout=2000, anchor=anchor)
+                return
 
         if fixed == text:
-            print(f"  = left alone ({took:.0f}ms){note}")
             self._schedule_restore(original, 0.05)
+            if info.get("polish_fallback"):
+                self.hud("info", "Left as is", "A polish would have changed what you meant.", timeout=3500, anchor=anchor)
+            else:
+                self.hud("success", "Looks good", "No changes needed.", timeout=2200, anchor=anchor)
             return
 
-        clip.set_text(fixed, private=True)
+        new_html = None
+        if html:
+            try:
+                new_html = richtext.rewrite_cf_html(html, text, fixed)
+            except Exception as e:
+                log_error(f"rich text mapping failed: {type(e).__name__}")
+        clip.set_text(fixed, private=True, html=new_html)
         seq_after_set = clip.sequence()
         time.sleep(0.03)
+        settle_modifiers()
         send_ctrl(VK_V)
         play_fix_sound(mode)
-        print(f"  ~ [{'POLISHED' if mode == 'polish' else 'FIXED'}] in {took:.0f}ms{note}")
         self._schedule_restore(original, CLIPBOARD_RESTORE_DELAY, only_if_seq=seq_after_set)
 
-    # -- prefetch watcher ---------------------------------------------------------
+        self._undo = {"hwnd": hwnd, "time": time.time()}
+        undo = [("Undo", lambda ctx=self._undo: self.jobs.put(("undo", ctx, time.time())))]
+        if mode == "polish" and not info.get("polish_fallback"):
+            self.hud("polish", "Polished", "Formatting kept." if new_html else "", actions=undo,
+                     timeout=5000, anchor=anchor)
+        else:
+            n = richtext.count_changes(text, fixed)
+            detail = "Polishing would have changed your meaning, so only typos were fixed." \
+                if info.get("polish_fallback") else ("Formatting kept." if new_html else "")
+            self.hud("success", f"Fixed {plural(n, 'word')}" if n else "Fixed", detail, actions=undo,
+                     timeout=5000, anchor=anchor)
+
+    def _compute(self, text, mode, cfg, anchor, style=None, variant=0):
+        """Run the pipeline with the card showing progress. Returns (text, info) or (None, info) if cancelled."""
+        info = {}
+        opts = self._options(cfg, mode, style, variant, info)
+        lead, core, trail = _split_edges(text)
+        if mode == "fix" and "\n" not in core and not chunking.needs_chunking(text, mode):
+            cached = self.cache.get(core)
+            if cached is not None:
+                return lead + cached + trail, info
+
+        self.cancel_event.clear()
+        done = threading.Event()
+        long_job = chunking.needs_chunking(text, mode)
+        verb = "Fixing" if mode == "fix" else "Polishing"
+        state = {"progress": None}
+
+        def cancel_action():
+            self.cancel_event.set()
+
+        def show_working():
+            if done.is_set():
+                return
+            p = state["progress"]
+            detail = "Esc to cancel" if long_job else ""
+            self.hud("working", f"{verb}…" if p is None else f"{verb}…  {p[0] + 1} of {p[1]}", detail,
+                     actions=[("Cancel", cancel_action)] if long_job else (),
+                     progress=(p[0] / p[1]) if p else None, anchor=anchor)
+
+        def progress(i, total):
+            state["progress"] = (min(i, total - 1), total)
+            if i and not done.is_set():
+                show_working()
+
+        timer = threading.Timer(HUD_DELAY, show_working)
+        timer.daemon = True
+        timer.start()
+        if long_job:
+            self._set_cancel_key(True)
+        try:
+            if ENGINE == "embedded" and self.fix is not None and not self._engine().is_running():
+                self._wake_engine()
+            result = self._run(text, mode, opts, progress=progress, cancel=self.cancel_event)
+            return result, info
+        except chunking.Cancelled:
+            return None, info
+        finally:
+            done.set()
+            timer.cancel()
+            if long_job:
+                self._set_cancel_key(False)
+            self.hide_hud()
+
+    def _polish_with_preview(self, text, cfg, hwnd, anchor):
+        """Show the polish, let the user replace / retry / change style / cancel.
+        Returns the text to paste, or None."""
+        decisions = queue.Queue()
+        style = cfg.get("polish_style", "professional")
+        if style not in POLISH_STYLES:
+            style = "professional"
+        if ENGINE == "embedded" and self.fix is not None and not self._engine().is_running():
+            self._wake_engine()
+            self.hide_hud()
+        self.ui.open_preview(POLISH_STYLES, style, lambda action, value: decisions.put((action, value)), anchor)
+        variant, seen = 0, set()
+        while True:
+            try:
+                info = {}
+                result = self._run(text, "polish", self._options(cfg, "polish", style, variant, info))
+                # "Try again" must show something new: resample a couple of times.
+                for _ in range(3):
+                    if not variant or (style, result) not in seen:
+                        break
+                    variant += 1
+                    result = self._run(text, "polish", self._options(cfg, "polish", style, variant, info))
+                seen.add((style, result))
+                note = "Kept your meaning: only typos were fixed." if info.get("polish_fallback") else ""
+                if result == text:
+                    note = "Nothing to improve — this already reads well."
+                self.ui.preview_result(text, result, note)
+            except Exception as e:
+                self.ui.preview_error(str(e) or type(e).__name__)
+            action, value = decisions.get()
+            if action == "retry":
+                variant = variant + 1 if value == style else 0
+                style = value
+                continue
+            if action == "cancel":
+                return None
+            # accept: give focus back to the app, then paste over the still-selected text
+            from hud_win import force_foreground
+            force_foreground(hwnd)
+            wait_for_foreground(hwnd)
+            time.sleep(0.06)
+            return value
+
+    def _do_undo(self, ctx):
+        if not ctx or ctx is not self._undo or time.time() - ctx["time"] > UNDO_WINDOW:
+            self.hud("info", "Nothing to undo", "Use Ctrl+Z in your app instead.", timeout=2500)
+            return
+        if user32.GetForegroundWindow() != ctx["hwnd"]:
+            from hud_win import force_foreground
+            force_foreground(ctx["hwnd"])
+            if not wait_for_foreground(ctx["hwnd"], 0.5):
+                self.hud("info", "Couldn't undo", "Click back into your text and press Ctrl+Z.", timeout=3000)
+                return
+        self._undo = None
+        settle_modifiers()
+        send_ctrl(VK_Z)
+        self.hud("success", "Undone", "Your original text is back.", timeout=1800)
+
+    # -- Esc to cancel (registered only while a long job runs) ------------------------
+
+    def _set_cancel_key(self, flag):
+        user32.PostThreadMessageW(self.main_thread_id, WM_APP_CANCEL_KEY, 1 if flag else 0, 0)
+
+    # -- background watchers ----------------------------------------------------------
 
     def watcher(self):
         reader = None
@@ -630,6 +880,37 @@ class FixelectApp:
                     and time.time() - seen_at >= SETTLE_SECONDS):
                 submitted = current
                 self.jobs.put(("prefetch", current, time.time()))
+
+    def idle_watcher(self):
+        while True:
+            time.sleep(30)
+            if self.jobs.empty():
+                self.jobs.put(("unload", None, time.time()))
+
+    def update_watcher(self):
+        import updater
+        time.sleep(25)
+        while True:
+            cfg = load_config()
+            if updater.due(cfg):
+                self.check_updates(quiet=True)
+            time.sleep(3600)
+
+    def check_updates(self, quiet=False):
+        """Returns (info or None, error or None)."""
+        import updater
+        try:
+            info = updater.check()
+            update_config(last_update_check=time.time())
+        except Exception as e:
+            log_error(f"update check failed: {type(e).__name__}")
+            return None, "Couldn't reach GitHub. Check your connection and try again."
+        self.update_info = info
+        if info and quiet and info["version"] != load_config().get("skipped_version"):
+            self.notify(f"Fixelect {info['version']} is available", "Open Fixelect → General to update.")
+            if self.tray:
+                self.tray.refresh()
+        return info, None
 
     # -- hotkeys (main thread only: RegisterHotKey binds to the calling thread) -----
 
@@ -705,8 +986,8 @@ class FixelectApp:
         class Services:
             platform = "win"
 
-            def fix(self, text, mode="fix"):
-                return app.run_fix_sync(text, mode)
+            def fix(self, text, mode="fix", style=None):
+                return app.run_fix_sync(text, mode, style=style)
 
             def status(self):
                 return app.status()
@@ -731,28 +1012,71 @@ class FixelectApp:
             def prefs_changed(self):
                 app.post_reload()
 
+            def check_updates(self):
+                return app.check_updates()
+
+            def update_info(self):
+                return app.update_info
+
+            def install_update(self, info, progress, cancel):
+                return app.install_update(info, progress, cancel)
+
+            def diagnostics(self):
+                return app.diagnostics()
+
         return Services()
 
-    def open_dashboard(self):
+    def install_update(self, info, progress=None, cancel=None):
+        """Download the new installer (checksum-verified), run it silently and quit."""
+        import subprocess
+        import tempfile
+        import updater
+        path = updater.download_asset(info, "FixelectSetup.exe", tempfile.gettempdir(), progress, cancel)
+        subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
+                         close_fds=True)
+        threading.Timer(0.5, self.quit).start()
+        return True
+
+    def diagnostics(self):
+        import diagnostics
+        eng = None
+        try:
+            eng = self._engine()
+        except Exception:
+            pass
+        extra = {
+            "Engine state": self.status_info.get("state"),
+            "Engine detail": self.status_info.get("detail"),
+            "Engine running": bool(eng and eng.is_running()),
+            "Engine backend": getattr(eng, "backend_label", ""),
+            "Engine port": getattr(eng, "port", ""),
+            "Hotkey errors": "; ".join(self.hotkey_errors) or "none",
+            "Double-tap hook": bool(self.listener and self.listener.active),
+        }
+        return diagnostics.report(extra)
+
+    def open_dashboard(self, page=None):
         if self.ui is None:
             from ui import UIManager
             self.ui = UIManager(self.services())
-        self.ui.open_dashboard()
+        self.ui.open_dashboard(page)
 
     # -- main ---------------------------------------------------------------------------
 
     def run(self, show_dashboard, show_startup_toast):
         ensure_single_instance(self.open_dashboard)
+        from ui import UIManager
+        self.ui = UIManager(self.services())
+        self.ui.warm_up()
 
+        just_set_up = False
         if ENGINE == "embedded":
             profile = load_config().get("model_profile", "3b")
             if not resolve_model(profile):
-                from ui import UIManager
-                self.ui = UIManager(self.services())
                 if not self.ui.run_setup_blocking():
                     print("  [Fixelect] Setup cancelled - exiting.")
                     return
-                show_dashboard = False  # setup just finished; don't stack another window
+                just_set_up = True
 
         cfg = load_config()
         if cfg.get("prefetch_enabled"):
@@ -760,6 +1084,8 @@ class FixelectApp:
 
         threading.Thread(target=self.worker, daemon=True, name="fixelect-worker").start()
         threading.Thread(target=self.watcher, daemon=True, name="fixelect-prefetch").start()
+        threading.Thread(target=self.idle_watcher, daemon=True, name="fixelect-idle").start()
+        threading.Thread(target=self.update_watcher, daemon=True, name="fixelect-updates").start()
 
         self.listener = WinHotkeyListener(
             on_fix=lambda: self.trigger("fix"),
@@ -776,6 +1102,7 @@ class FixelectApp:
                 on_quit=self.quit,
                 on_switch_model=self.request_model_switch,
                 get_status=self.status,
+                get_update=lambda: self.update_info,
             )
             self.tray.start()
             if show_startup_toast:
@@ -787,10 +1114,12 @@ class FixelectApp:
         except Exception as e:
             print(f"  (Tray disabled: {e})")
 
-        if show_dashboard:
+        if just_set_up or not cfg.get("onboarding_done", False):
+            self.open_dashboard("Welcome")
+        elif show_dashboard:
             self.open_dashboard()
 
-        print(f"\n  Engine: {ENGINE.upper()}")
+        print(f"\n  Fixelect {APP_VERSION}  ·  engine: {ENGINE.upper()}")
         print(f"  {get_hotkey_label('fix'):<14} fix selected text")
         print(f"  {get_hotkey_label('polish'):<14} polish selected text")
         print("  Ctrl+Alt+Q     quit\n")
@@ -801,11 +1130,18 @@ class FixelectApp:
                 if msg.message == WM_HOTKEY:
                     if msg.wParam == ID_QUIT:
                         break
+                    if msg.wParam == ID_CANCEL:
+                        self.cancel_event.set()
+                        continue
                     self.trigger("polish" if msg.wParam in (ID_POLISH, ID_FALLBACK_POLISH) else "fix")
                 elif msg.message == WM_APP_RELOAD_HOTKEYS:
                     self._reload_everything()
                 elif msg.message == WM_APP_SUSPEND_HOTKEYS:
                     self.apply_system_hotkeys(suspended=bool(msg.wParam))
+                elif msg.message == WM_APP_CANCEL_KEY:
+                    user32.UnregisterHotKey(None, ID_CANCEL)
+                    if msg.wParam:
+                        user32.RegisterHotKey(None, ID_CANCEL, MOD_NOREPEAT, VK_ESCAPE)
         finally:
             self.shutdown()
 
@@ -817,7 +1153,7 @@ class FixelectApp:
                 pass
         if self.tray:
             self.tray.stop()
-        for hid in ALL_HOTKEY_IDS:
+        for hid in ALL_HOTKEY_IDS + (ID_CANCEL,):
             user32.UnregisterHotKey(None, hid)
         snap, _ = self._take_pending_restore()
         if snap is not None:
@@ -841,7 +1177,7 @@ class FixelectApp:
 # CLI
 # --------------------------------------------------------------------------
 
-HELP = """Fixelect - AI Offline Grammar & Executive Polish for Windows
+HELP = """Fixelect - AI Offline Grammar & Polish for Windows
 
 Usage:
   fixelect.py                    Start in the system tray and open the dashboard
@@ -852,6 +1188,7 @@ Usage:
   fixelect.py -p "some text"     Polish text in the console
   fixelect.py --test             Run the self-test suite
   fixelect.py --benchmark        Time a few sentences
+  fixelect.py --version          Print the version
 """
 
 
@@ -885,6 +1222,9 @@ def main():
 
     if _pop_flag("--help", "-h"):
         print(HELP)
+        return
+    if _pop_flag("--version"):
+        print(APP_VERSION)
         return
 
     if _pop_flag("--download"):
@@ -933,7 +1273,7 @@ def main():
         fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
         mode = "polish" if polish_mode else "fix"
         started = time.time()
-        fixed, _, _ = fix_preserving_layout(text, lambda t: fix(t, mode=mode), mode=mode)
+        fixed = chunking.process(text, lambda t: fix(t, mode=mode), mode=mode)
         print(f"\n  mode: {mode.upper()}\n  in  : {text}\n  out : {fixed}\n  {(time.time() - started) * 1000:.0f}ms")
         return
 
@@ -944,7 +1284,7 @@ def main():
 
 
 def run_self_tests():
-    print(f"Running Fixelect self-tests with engine [{ENGINE.upper()}]...")
+    print(f"Running Fixelect {APP_VERSION} self-tests with engine [{ENGINE.upper()}]...")
     fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
     from check_guard import normalise, expand
     all_passed = True
@@ -954,15 +1294,18 @@ def run_self_tests():
         all_passed &= ok
         print(f"[{'PASS' if ok else 'FAIL'}] {line}")
 
-    print("\n--- [1/3] Guard rules (no model) ---")
+    print("\n--- [1/4] Guard rules (no model) ---")
     for inp, exp in [("enter your user id", "enter your user id"), ("i feel ill", "I feel ill"),
                      ("she lets me go", "she lets me go"), ("im fne", "I'm fine")]:
         out = expand(inp)
         report(out == exp, f"expand({inp!r}) -> {out!r}")
     for inp, exp in [("  hello  ", ("  ", "hello", "  ")), ("x", ("", "x", ""))]:
         report(_split_edges(inp) == exp, f"edges({inp!r})")
+    for inp, exp in [("Hola, ¿cómo estás? Mañana nos vemos.", "es"), ("Привет, как дела?", "ru"),
+                     ("Salom, qalaysan? Ertaga uchrashamiz.", "uz"), ("I will call you tomorrow.", "en")]:
+        report(detect_language(inp) == exp, f"language({inp!r}) -> {detect_language(inp)}")
 
-    print("\n--- [2/3] Default Fix Mode ---")
+    print("\n--- [2/4] Default Fix Mode ---")
     for inp, exp in [
         ("your welcome", "you're welcome"),
         ("i cant seem too focus on the the task", "I can't seem to focus on the task"),
@@ -978,7 +1321,7 @@ def run_self_tests():
     out, _, _ = fix_preserving_layout("helo world ", lambda t: fix(t, mode="fix"))
     report(out.endswith(" "), f"trailing space kept -> {out!r}")
 
-    print("\n--- [3/3] Professional Polish Mode ---")
+    print("\n--- [3/4] Polish Mode ---")
     for inp, required in [
         ("tobehonest i think we need to change someint in that isutation cause it looks bad", ["situation", "honest"]),
         ("The MT300 SWIFT message failed validation in the PLSQL package.", ["MT300", "SWIFT", "PLSQL"]),
@@ -987,6 +1330,13 @@ def run_self_tests():
     ]:
         out, _, _ = fix_preserving_layout(inp, lambda t: fix(t, mode="polish"), mode="polish")
         report(all(tok.lower() in out.lower() for tok in required), f"{inp!r}\n       -> {out!r}")
+
+    print("\n--- [4/4] Other languages & long text ---")
+    out = chunking.process("Mañana voy a la ofisina porque tengo que acer muchas cosas.", lambda t: fix(t, mode="fix"))
+    report("oficina" in out and "hacer" in out, f"Spanish fix -> {out!r}")
+    long_text = " ".join(["i cant beleive its already friday."] * 40)
+    out = chunking.process(long_text, lambda t: fix(t, mode="fix"))
+    report(out.count("believe") == 40, f"long text chunked -> {out.count('believe')}/40 fixed")
 
     print(f"\nSelf-tests {'PASSED ALL CHECKS' if all_passed else 'HAD FAILURES'}.")
     return all_passed

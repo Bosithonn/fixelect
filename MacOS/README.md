@@ -93,29 +93,18 @@ chmod +x build_dmg.sh
 
 ```
 MacOS/
-├── fixelect_mac.py                # Main macOS daemon & hotkey loop
-├── Info.plist                     # macOS bundle metadata & permission strings
-├── setup.py                       # py2app packaging script
+├── fixelect_mac.py                # Menu bar daemon: hotkeys, engine, status panel, Polish preview
 ├── Fixelect_Mac.spec              # PyInstaller macOS bundle specification
-├── build_dmg.sh                   # Automated hdiutil drag-and-drop DMG packager
-├── words.txt                      # Protected vocabulary whitelist
-├── shorthand.txt                  # Custom shorthand expansions
-├── dictionary.txt                 # English vocabulary corpus
-├── freq.txt                       # Word frequency rankings
-├── resources/
-│   ├── app_icon.icns              # Retina multi-resolution macOS ICNS icon
-│   ├── status_bar_template.png    # 18x18 Menu Bar adaptive icon
-│   ├── status_bar_template@2x.png # 36x36 Retina Menu Bar icon
-│   ├── brand_logo.png             # Brand artwork
-│   └── PRIVACY_POLICY.md          # Zero-telemetry policy
-└── tools/
-    ├── config_mac.py              # ~/Library/Application Support & LaunchAgent autostart
-    ├── hardware_mac.py            # Apple Silicon / UMA detector & Metal profiler
-    ├── downloader_mac.py          # Model downloader & Ollama cache finder
-    ├── check_guard.py             # Dual-mode AI pipeline, voting & guard layers
-    ├── engine_mac.py              # Metal llama-server process manager
-    ├── clipboard_mac.py           # Quartz CGEvent / NSPasteboard bridge
-    ├── hotkey_mac.py              # Global hotkey listener & permission check
-    ├── status_bar.py              # macOS Menu Bar status item (NSStatusItem)
-    └── ui_mac.py                  # Fluent Aqua Dark Dashboard & Setup GUI
+├── build_dmg.sh                   # Builds the app with its engine inside, signs, notarizes, DMG
+├── entitlements.plist             # Hardened runtime permissions
+├── tools/                         # Pasteboard, hotkeys, Metal engine, native HUD, app detection
+└── resources/
+    ├── app_icon.icns              # Retina multi-resolution macOS ICNS icon
+    ├── status_bar_template.png    # 18x18 Menu Bar adaptive icon
+    ├── status_bar_template@2x.png # 36x36 Retina Menu Bar icon
+    ├── brand_logo.png             # Brand artwork
+    └── PRIVACY_POLICY.md          # Privacy policy
+
+Shared with Windows (../shared): guard and prompts, languages, chunking, rich text,
+dashboard UI, updater, diagnostics, dictionary and word lists.
 ```

@@ -9,6 +9,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "Windows" / "tools"))
+sys.path.insert(0, str(ROOT / "shared"))
 
 import check_guard as G  # noqa: E402
 

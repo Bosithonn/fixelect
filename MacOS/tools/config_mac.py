@@ -14,6 +14,11 @@ import plistlib
 import subprocess
 import sys
 
+try:
+    from apps_mac import DEFAULT_DISABLED
+except Exception:  # pragma: no cover
+    DEFAULT_DISABLED = []
+
 APP_NAME = "Fixelect"
 BUNDLE_ID = "com.fixelect.app"
 
@@ -26,6 +31,18 @@ DEFAULT_CONFIG = {
     "hotkey_polish": "double_control",
     "custom_fix": "<cmd>+<alt>+f",
     "custom_polish": "<cmd>+<alt>+p",
+    "polish_style": "professional",     # see check_guard.POLISH_STYLES
+    "custom_instruction": "",           # the writer's own style note for Polish
+    "polish_preview": True,             # show Polish results before replacing
+    "multilingual": True,               # fix Spanish, French, German, ... too
+    "hud_enabled": True,                # small on-screen status card
+    "keep_formatting": True,            # paste rich text when the app copied rich text
+    "unload_minutes": 10,               # free the model's memory after this idle time (0 = never)
+    "check_updates": True,
+    "last_update_check": 0,
+    "skipped_version": "",
+    "onboarding_done": False,
+    "disabled_apps": list(DEFAULT_DISABLED),
 }
 
 
@@ -86,18 +103,22 @@ def get_config_path() -> pathlib.Path:
     return get_config_dir() / "config.json"
 
 
+def _defaults() -> dict:
+    return {k: (list(v) if isinstance(v, list) else v) for k, v in DEFAULT_CONFIG.items()}
+
+
 def load_config() -> dict:
     cfg_path = get_config_path()
+    res = _defaults()
     if cfg_path.is_file():
         try:
             with open(cfg_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                res = DEFAULT_CONFIG.copy()
+            if isinstance(data, dict):
                 res.update(data)
-                return res
         except Exception:
             pass
-    return DEFAULT_CONFIG.copy()
+    return res
 
 
 def save_config(cfg: dict) -> bool:
@@ -133,6 +154,25 @@ def validate_hotkey(combo: str):
     if not any(t in mods - {"shift"} for t in tokens) and not (keys[0].startswith("f") and keys[0][1:].isdigit()):
         return False, "Add ⌘, ⌃ or ⌥ — a plain key would be typed into your document."
     return True, ""
+
+
+def get_logs_dir() -> pathlib.Path:
+    p = get_config_dir() / "logs"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def log_error(message) -> None:
+    """Append a short diagnostic line (never user text) to the local log file."""
+    try:
+        import time as _t
+        path = get_logs_dir() / "fixelect.log"
+        if path.is_file() and path.stat().st_size > 512 * 1024:
+            path.write_text("", encoding="utf-8")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{_t.strftime('%Y-%m-%d %H:%M:%S')}  {message}\n")
+    except Exception:
+        pass
 
 
 def get_lock_path() -> pathlib.Path:

@@ -4,10 +4,10 @@ Resolves, discovers, and downloads GGUF models into ~/Library/Application Suppor
 Also discovers local models in Ollama's macOS storage (~/.ollama/models/).
 """
 
+import hashlib
 import os
 import pathlib
 import shutil
-import sys
 import subprocess
 import time
 import urllib.error
@@ -21,6 +21,7 @@ MODELS = {
         "full_name": "Qwen 2.5 3B — High Quality & Nuance",
         "short_name": "Qwen 2.5 3B",
         "filename": "qwen2.5-3b-instruct-q4_k_m.gguf",
+        "sha256": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
         "url": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
         "size_bytes": 2104932768,
         "approx_mb": 2007,
@@ -34,6 +35,7 @@ MODELS = {
         "full_name": "Qwen 2.5 1.5B — Fast & Compact",
         "short_name": "Qwen 2.5 1.5B",
         "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
         "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
         "size_bytes": 1117320736,
         "approx_mb": 1065,
@@ -47,6 +49,7 @@ MODELS = {
         "full_name": "Qwen 2.5 0.5B — Ultra Light & Battery Saver",
         "short_name": "Qwen 2.5 0.5B",
         "filename": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+        "sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
         "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
         "size_bytes": 491400032,
         "approx_mb": 468,
@@ -60,6 +63,7 @@ MODELS = {
         "full_name": "Qwen 2.5 7B — Executive Pro & Complex Nuance",
         "short_name": "Qwen 2.5 7B",
         "filename": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
+        "sha256": "65b8fcd92af6b4fefa935c625d1ac27ea29dcb6ee14589c55a8f115ceaaa1423",
         "url": "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf",
         "size_bytes": 4683074240,
         "approx_mb": 4466,
@@ -197,6 +201,11 @@ def download_model(profile: str = "3b", progress_callback=None, cancel_event=Non
             start_byte = 0
         length = response.headers.get("Content-Length")
         total = (int(length) + start_byte) if length else spec["size_bytes"]
+        digest = hashlib.sha256()
+        if start_byte:
+            with open(part_path, "rb") as f:
+                for block in iter(lambda: f.read(4 * 1024 * 1024), b""):
+                    digest.update(block)
         downloaded, t0, last = start_byte, time.time(), 0.0
         try:
             with open(part_path, "ab" if start_byte else "wb") as f:
@@ -207,6 +216,7 @@ def download_model(profile: str = "3b", progress_callback=None, cancel_event=Non
                     if not chunk:
                         break
                     f.write(chunk)
+                    digest.update(chunk)
                     downloaded += len(chunk)
                     now = time.time()
                     if progress_callback and now - last >= 0.1:
@@ -219,6 +229,9 @@ def download_model(profile: str = "3b", progress_callback=None, cancel_event=Non
 
     if length and downloaded < total:
         raise RuntimeError("Download was interrupted. Retry to resume where it stopped.")
+    if spec.get("sha256") and digest.hexdigest() != spec["sha256"]:
+        part_path.unlink(missing_ok=True)
+        raise RuntimeError("The download was corrupted (checksum mismatch). Please try again.")
     os.replace(part_path, final_path)
     if progress_callback:
         progress_callback(total, total, 0)
@@ -232,6 +245,12 @@ def get_bin_dir() -> pathlib.Path:
     return b
 
 
+# Pinned llama.cpp Metal build. Release builds ship it inside Fixelect.app
+# (build_dmg.sh); this download is only a fallback for source checkouts.
+ENGINE_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b4600/llama-b4600-bin-macos-arm64.zip"
+ENGINE_SHA256 = "b1bfd80df6eca26ef304df47135069dfdf282fa4dcfba1a684e1ff857728973a"
+
+
 def fetch_metal_engine(progress_callback=None) -> pathlib.Path | None:
     """Download the llama.cpp Metal build once into Application Support/Fixelect/bin.
 
@@ -242,12 +261,12 @@ def fetch_metal_engine(progress_callback=None) -> pathlib.Path | None:
         if existing.is_file() and os.access(existing, os.X_OK):
             return existing
 
-    url = "https://github.com/ggml-org/llama.cpp/releases/download/b4600/llama-b4600-bin-macos-arm64.zip"
     zip_path = bin_dir / "llama_metal.zip"
     dest = bin_dir / "llama.cpp"
     try:
         import zipfile
-        req = urllib.request.Request(url, headers={"User-Agent": "Fixelect-macOS/1.0"})
+        req = urllib.request.Request(ENGINE_URL, headers={"User-Agent": "Fixelect-macOS/1.1"})
+        digest = hashlib.sha256()
         with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as out:
             total = int(resp.headers.get("Content-Length", 0) or 0)
             done = 0
@@ -256,9 +275,13 @@ def fetch_metal_engine(progress_callback=None) -> pathlib.Path | None:
                 if not chunk:
                     break
                 out.write(chunk)
+                digest.update(chunk)
                 done += len(chunk)
                 if progress_callback:
                     progress_callback(done, total or done)
+        if digest.hexdigest() != ENGINE_SHA256:
+            zip_path.unlink(missing_ok=True)
+            raise RuntimeError("engine download failed its checksum")
         shutil.rmtree(dest, ignore_errors=True)
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(dest)

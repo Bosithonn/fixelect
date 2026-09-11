@@ -58,12 +58,15 @@ def create_tray_icon(size=64, active=True):
     return image
 
 
-_STATE_TEXT = {"loading": "Starting…", "ready": "Ready", "error": "Needs attention", "busy": "Working…"}
+_STATE_TEXT = {"loading": "Starting…", "ready": "Ready", "error": "Needs attention", "busy": "Working…",
+               "sleeping": "Ready (model asleep to save memory)"}
 
 
 class TrayManager:
-    def __init__(self, on_open_settings=None, on_quit=None, on_switch_model=None, get_status=None):
+    def __init__(self, on_open_settings=None, on_quit=None, on_switch_model=None, get_status=None,
+                 get_update=None):
         self.on_open_settings = on_open_settings
+        self.get_update = get_update or (lambda: None)
         self.on_quit = on_quit
         self.on_switch_model = on_switch_model
         self.get_status = get_status or (lambda: {"state": "ready"})
@@ -73,8 +76,11 @@ class TrayManager:
     # -- actions -------------------------------------------------------------
 
     def _open(self, icon=None, item=None):
+        self._open_page(None)
+
+    def _open_page(self, page):
         if self.on_open_settings:
-            threading.Thread(target=self.on_open_settings, daemon=True).start()
+            threading.Thread(target=lambda: self.on_open_settings(page), daemon=True).start()
 
     def _toggle_sound(self, icon, item):
         update_config(sound_enabled=not load_config().get("sound_enabled", True))
@@ -129,7 +135,10 @@ class TrayManager:
             M(lambda item: f"Polish selected text\t{get_hotkey_label('polish')}", None, enabled=False),
             pystray.Menu.SEPARATOR,
             M("Open Fixelect", self._open, default=True),
+            M(lambda item: f"Update to Fixelect {(self.get_update() or {}).get('version', '')}…",
+              lambda icon, item: self._open_page("General"), visible=lambda item: bool(self.get_update())),
             M("Model", pystray.Menu(self._model_items)),
+            M("Help & diagnostics", lambda icon, item: self._open_page("Help")),
             pystray.Menu.SEPARATOR,
             M("Sound feedback", self._toggle_sound,
               checked=lambda item: load_config().get("sound_enabled", True)),

@@ -14,6 +14,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -64,6 +65,7 @@ class MacEmbeddedEngine:
         self._owns_process = False
         self._lock = threading.RLock()
         self._conn_lock = threading.Lock()
+        self.last_used = time.time()
         self.hw = detect_mac_hardware()
         self.backend_label = "METAL" if self.hw.get("is_apple_silicon") else "CPU"
         self.publish = False  # set by the daemon: write runtime.json for window processes
@@ -111,7 +113,9 @@ class MacEmbeddedEngine:
 
     def _find_llama_server(self):
         arch_dir = "darwin-arm64" if self.hw["is_apple_silicon"] else "darwin-x86_64"
+        bundled = pathlib.Path(getattr(sys, "_MEIPASS", pathlib.Path(__file__).resolve().parent.parent)) / "llama"
         candidates = [
+            bundled / "llama-server",                      # shipped inside Fixelect.app (Contents/Frameworks/llama)
             get_resource_path(f"resources/bin/{arch_dir}/llama-server"),
             get_resource_path("resources/bin/llama-server"),
             pathlib.Path("/opt/homebrew/bin/llama-server"),
@@ -164,8 +168,16 @@ class MacEmbeddedEngine:
                 raise FileNotFoundError(f"Model '{self.model_profile}' is not downloaded yet. Open Model settings.")
 
             # A window process attaches to the daemon (waiting while it loads).
-            if not self.publish and self._attach(model_path, 90 if daemon_pid() else 0):
-                return True
+            # If the daemon unloaded an idle model, SIGUSR2 asks it to load again.
+            if not self.publish:
+                dpid = daemon_pid()
+                if dpid and not self._attach(model_path, 0):
+                    try:
+                        os.kill(dpid, signal.SIGUSR2)
+                    except Exception:
+                        pass
+                if self._attach(model_path, 90 if dpid else 0):
+                    return True
             if self.is_healthy() and self._serves(model_path):
                 self._owns_process = False
                 return True
@@ -244,6 +256,21 @@ class MacEmbeddedEngine:
 
     # -- inference ---------------------------------------------------------------------
 
+    def idle_seconds(self):
+        return time.time() - self.last_used
+
+    def owns_server(self):
+        return self._owns_process and self.process is not None and self.process.poll() is None
+
+    def unload(self):
+        """Free the model's memory (GPU/RAM). The next request loads it again."""
+        with self._lock:
+            if not self.owns_server():
+                return False
+            with self._conn_lock:
+                self.stop()
+            return True
+
     def chat_completion(self, messages, temperature=0.0, max_tokens=512, top_k=20, top_p=0.9, seed=None):
         payload = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens,
                    "top_k": top_k, "top_p": top_p, "stream": False, "cache_prompt": True}
@@ -251,6 +278,7 @@ class MacEmbeddedEngine:
             payload["seed"] = seed
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json", "Connection": "keep-alive"}
+        self.last_used = time.time()
         with self._conn_lock:
             for attempt in range(2):
                 if self.conn is None:
@@ -268,6 +296,7 @@ class MacEmbeddedEngine:
                         raise ConnectionError("The AI engine is not responding.")
                     continue
                 if res.status == 200:
+                    self.last_used = time.time()
                     data = json.loads(raw.decode("utf-8"))
                     return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
                 if res.status in (400, 413):

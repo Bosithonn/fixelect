@@ -124,6 +124,7 @@ class EmbeddedEngine:
         self._owns_process = False
         self._lock = threading.RLock()
         self._conn_lock = threading.Lock()
+        self.last_used = time.time()
         self.backend_label = ""
 
     @property
@@ -345,6 +346,21 @@ class EmbeddedEngine:
 
     # -- inference ---------------------------------------------------------------
 
+    def idle_seconds(self):
+        return time.time() - self.last_used
+
+    def owns_server(self):
+        return self._owns_process and self.process is not None and self.process.poll() is None
+
+    def unload(self):
+        """Free the model's memory (GPU/RAM). The next request loads it again."""
+        with self._lock:
+            if not self.owns_server():
+                return False
+            with self._conn_lock:
+                self.stop()
+            return True
+
     def chat_completion(self, messages, temperature=0.0, max_tokens=512, top_k=20, top_p=0.9, seed=None):
         """Run one chat completion over a keep-alive connection. Returns the reply text."""
         payload = {
@@ -360,6 +376,7 @@ class EmbeddedEngine:
             payload["seed"] = seed
         body = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json", "Connection": "keep-alive"}
+        self.last_used = time.time()
 
         with self._conn_lock:
             for attempt in range(2):
@@ -379,6 +396,7 @@ class EmbeddedEngine:
                         raise ConnectionError("The AI engine is not responding.")
                     continue
                 if res.status == 200:
+                    self.last_used = time.time()
                     data = json.loads(raw.decode("utf-8"))
                     return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
                 if res.status in (400, 413):

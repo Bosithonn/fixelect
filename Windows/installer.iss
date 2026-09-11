@@ -3,7 +3,14 @@
 ; Installer Configuration
 
 #define MyAppName "Fixelect"
-#define MyAppVersion "1.0.0"
+; CI passes /DMyAppVersion=x.y.z from the release tag, /DSourceDir for an alternate
+; build folder, and /DSIGN (with /Sfixsign=...) when a code-signing certificate is available.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.1.0"
+#endif
+#ifndef SourceDir
+  #define SourceDir "dist\Fixelect"
+#endif
 #define MyAppPublisher "Bositxon Erkinxonov"
 #define MyAppURL "https://github.com/Bosithonn/fixelect"
 #define MyAppExeName "Fixelect.exe"
@@ -33,6 +40,11 @@ WizardStyle=modern
 ; Output Binaries
 OutputDir=dist
 OutputBaseFilename=FixelectSetup
+VersionInfoVersion={#MyAppVersion}
+#ifdef SIGN
+SignTool=fixsign
+SignedUninstaller=yes
+#endif
 Compression=lzma2/ultra64
 SolidCompression=yes
 
@@ -50,7 +62,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startup"; Description: "Launch Fixelect automatically when Windows boots"; GroupDescription: "Windows Integration:"
 
 [Files]
-Source: "dist\Fixelect\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "resources\*.ico"; DestDir: "{app}\resources"; Flags: ignoreversion
 Source: "resources\*.png"; DestDir: "{app}\resources"; Flags: ignoreversion
 
@@ -64,6 +76,8 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; In-app updates run the installer silently: start the new version afterwards.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--silent"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\Fixelect\logs"

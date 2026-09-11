@@ -4,23 +4,57 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
+  pull_request:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release tag (e.g., v1.0.0)'
+        description: 'Release tag (e.g., v1.1.0). Leave empty to build without publishing.'
         required: false
-        default: 'v1.0.0'
+        default: ''
 
 permissions:
   contents: write
 
+env:
+  # v1.2.3 from a tag push or the manual input; empty for branch/PR builds.
+  RELEASE_TAG: ${{ github.event.inputs.tag_name || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # Model-free tests on all three platforms (guard rules, rich text, chunking,
+  # language detection, polish styles). Every build depends on them.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Guard tests
+        run: python tests/test_guard.py
+      - name: Text tests
+        run: python tests/test_text.py
+      - name: Release tag matches the app version
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        run: |
+          APP=$(python -c "import sys; sys.path.insert(0, 'shared'); import version; print(version.APP_VERSION)")
+          [ "v$APP" = "$RELEASE_TAG" ] || { echo "Tag $RELEASE_TAG does not match shared/version.py ($APP)"; exit 1; }
+
   build-windows:
     name: Build Windows Installer (.exe)
+    needs: test
     runs-on: windows-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -32,11 +66,8 @@ jobs:
       - name: Install Inno Setup
         run: |
           choco install innosetup --no-progress
-          if (Test-Path "C:\Program Files (x86)\Inno Setup 6") {
-            "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          }
-          if (Test-Path "C:\Program Files (x86)\Inno Setup 7") {
-            "C:\Program Files (x86)\Inno Setup 7" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          foreach ($d in "C:\Program Files (x86)\Inno Setup 6", "C:\Program Files (x86)\Inno Setup 7") {
+            if (Test-Path $d) { $d | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
           }
 
       - name: Install Python dependencies
@@ -44,40 +75,78 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r Windows/requirements.txt
 
-      - name: Run guard accuracy tests
-        run: python tests/test_guard.py
-
       - name: Build Windows executable with PyInstaller
         run: |
           cd Windows
           pyinstaller --clean Fixelect.spec -y
 
+      - name: Smoke-test the frozen app
+        run: |
+          # A windowed exe has no console, so check that every module imports and it exits cleanly.
+          $p = Start-Process -FilePath Windows/dist/Fixelect/Fixelect.exe -ArgumentList "--version" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "Fixelect.exe --version exited with $($p.ExitCode)"; exit 1 }
+
+      # Code signing runs only when the repository has a certificate:
+      #   WINDOWS_CERT_PFX (base64 of the .pfx) and WINDOWS_CERT_PASSWORD.
+      - name: Prepare code signing
+        id: sign
+        env:
+          CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if (-not $env:CERT_PFX) { "enabled=false" >> $env:GITHUB_OUTPUT; exit 0 }
+          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX))
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -like "*x64*" } | Sort-Object FullName -Descending | Select-Object -First 1
+          "enabled=true" >> $env:GITHUB_OUTPUT
+          "signtool=$($signtool.FullName)" >> $env:GITHUB_OUTPUT
+          "pfx=$pfx" >> $env:GITHUB_OUTPUT
+
+      - name: Sign Fixelect.exe
+        if: steps.sign.outputs.enabled == 'true'
+        env:
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          & "${{ steps.sign.outputs.signtool }}" sign /f "${{ steps.sign.outputs.pfx }}" /p $env:CERT_PASSWORD `
+            /fd sha256 /tr http://timestamp.digicert.com /td sha256 Windows/dist/Fixelect/Fixelect.exe
+
       - name: Compile Inno Setup installer
+        env:
+          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
           cd Windows
-          iscc installer.iss
-
-      - name: Verify installer binary
-        run: |
-          if (-not (Test-Path "Windows/dist/FixelectSetup.exe")) {
-            Write-Error "FixelectSetup.exe was not created!"
-            exit 1
+          $isccArgs = @()
+          if ($env:RELEASE_TAG) { $isccArgs += "/DMyAppVersion=$($env:RELEASE_TAG.TrimStart('v'))" }
+          if ("${{ steps.sign.outputs.enabled }}" -eq "true") {
+            $isccArgs += "/DSIGN"
+            $isccArgs += "/Sfixsign=`"${{ steps.sign.outputs.signtool }}`" sign /f `"${{ steps.sign.outputs.pfx }}`" /p $env:CERT_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 `$f"
           }
-          Get-Item "Windows/dist/FixelectSetup.exe" | Select-Object Name, Length
+          iscc @isccArgs installer.iss
+
+      - name: Checksum
+        run: |
+          if (-not (Test-Path "Windows/dist/FixelectSetup.exe")) { Write-Error "FixelectSetup.exe was not created!"; exit 1 }
+          $h = (Get-FileHash Windows/dist/FixelectSetup.exe -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path Windows/dist/FixelectSetup.exe.sha256 -Value $h -NoNewline -Encoding ascii
+          Get-Item Windows/dist/FixelectSetup.exe | Select-Object Name, Length
+          Write-Host "SHA-256 $h"
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: Fixelect-Windows-Installer
-          path: Windows/dist/FixelectSetup.exe
+          path: |
+            Windows/dist/FixelectSetup.exe
+            Windows/dist/FixelectSetup.exe.sha256
           if-no-files-found: error
 
   build-macos:
     name: Build macOS DMG (.dmg)
+    needs: test
     runs-on: macos-14
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -91,34 +160,58 @@ jobs:
           python3 -m pip install --upgrade pip
           pip3 install -r MacOS/requirements.txt
 
-      - name: Build macOS Application & DMG
+      - name: macOS smoke test (source)
+        run: python3 tests/mac_smoke.py
+
+      # Signing + notarization run only when the repository has an Apple
+      # Developer ID: MACOS_CERT_P12 (base64), MACOS_CERT_PASSWORD, DEVELOPER_ID,
+      # APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD.
+      - name: Import signing certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12" ]; then echo "No certificate: ad-hoc build"; exit 0; fi
+          KEYCHAIN="$RUNNER_TEMP/build.keychain"
+          KC_PASS=$(uuidgen)
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PASS" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KC_PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+      - name: Build macOS app & DMG
+        env:
+          DEVELOPER_ID: ${{ secrets.DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           cd MacOS
           chmod +x build_dmg.sh
           ./build_dmg.sh
 
-      - name: Verify DMG binary
-        run: |
-          if [ ! -f "MacOS/dist/Fixelect.dmg" ]; then
-            echo "Error: Fixelect.dmg was not created!"
-            exit 1
-          fi
-          ls -lh MacOS/dist/Fixelect.dmg
+      - name: macOS smoke test (built app)
+        run: python3 tests/mac_smoke.py MacOS/dist/Fixelect.app
 
       - name: Upload macOS DMG artifact
         uses: actions/upload-artifact@v4
         with:
           name: Fixelect-macOS-DMG
-          path: MacOS/dist/Fixelect.dmg
+          path: |
+            MacOS/dist/Fixelect.dmg
+            MacOS/dist/Fixelect.dmg.sha256
           if-no-files-found: error
 
   publish-release:
     name: Publish GitHub Release
     needs: [build-windows, build-macos]
+    if: github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag_name != '')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -128,52 +221,34 @@ jobs:
       - name: Organize release assets
         run: |
           mkdir -p release_assets
-          find artifacts -type f -name "FixelectSetup.exe" -exec cp {} release_assets/ \;
-          find artifacts -type f -name "Fixelect.dmg" -exec cp {} release_assets/ \;
-          echo "Release assets staged:"
+          find artifacts -type f \( -name "FixelectSetup.exe*" -o -name "Fixelect.dmg*" \) -exec cp {} release_assets/ \;
           ls -lh release_assets/
-
-      - name: Determine tag name
-        id: tag_info
-        run: |
-          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
-            echo "TAG_NAME=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          else
-            echo "TAG_NAME=v1.0.0" >> $GITHUB_OUTPUT
-          fi
 
       - name: Create GitHub Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag_info.outputs.TAG_NAME }}
-          name: "Fixelect ${{ steps.tag_info.outputs.TAG_NAME }}"
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: "Fixelect ${{ env.RELEASE_TAG }}"
           draft: false
           prerelease: false
           files: release_assets/*
           body: |
-            ## Fixelect ${{ steps.tag_info.outputs.TAG_NAME }} — 100% Offline AI Grammar & Executive Polish
+            ## Fixelect ${{ env.RELEASE_TAG }} — offline grammar fixes and polish in every app
 
-            Fixelect brings instant, zero-latency AI text correction and professional tone enhancement to every app on your system. **No cloud, no API keys, zero telemetry, 100% private.**
+            Fixelect fixes and polishes the text you select, in any app, with an AI model that runs entirely on your computer. No account, no cloud, no telemetry.
 
-            ---
+            ### Download
+            - **Windows 10 / 11 (64-bit)**: `FixelectSetup.exe`
+            - **macOS 11+ (Apple Silicon)**: `Fixelect.dmg`
 
-            ### 🚀 Download Installers
-            - **Windows (10 / 11 64-bit)**: [`FixelectSetup.exe`](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag_info.outputs.TAG_NAME }}/FixelectSetup.exe)
-            - **macOS (Apple Silicon M1/M2/M3/M4 & Intel)**: [`Fixelect.dmg`](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag_info.outputs.TAG_NAME }}/Fixelect.dmg)
+            Each file has a `.sha256` checksum next to it. Fixelect's built-in updater verifies it automatically.
 
-            ---
-
-            ### ✨ Key Features
-            - **Double-Tap Triggers**: Instant activation via quick double-taps (`⌥ ⌥` / `Ctrl+Alt+F` for Fix, `⌃ ⌃` / `Ctrl+Alt+P` for Polish).
-            - **Hardware-Accelerated Local Inference**:
-              - **Windows**: AVX2 CPU SIMD + NVIDIA CUDA automatic detection.
-              - **macOS**: Apple Silicon Unified Memory Metal GPU (`-ngl 99`) sub-second inference.
-            - **Strict Guarding Filter**: Preserves markdown, contractions, code snippets, and acronyms with zero hallucination.
-            - **Native System UI**:
-              - Fluent Dark theme for Windows 11.
-              - Dark Aqua SF Pro theme for macOS Sequoia & Sonoma.
-            - **Complete Privacy**: All processing occurs strictly on `127.0.0.1` local loopback. No network egress.
+            ### Highlights
+            - **Fix** (double-tap Alt / ⌥) keeps your voice; **Polish** (double-tap Ctrl / ⌃) shows a preview with Professional, Friendly, Concise, Formal and Shorter styles.
+            - An on-screen card shows progress and results, with one-click **Undo**.
+            - Formatting (bold, links, fonts) is kept in Word, Outlook, Google Docs and Gmail.
+            - English plus Spanish, French, German, Portuguese, Italian, Russian and Ukrainian.
+            - Turn Fixelect off for specific apps; terminals and password managers are off by default.
+            - Frees the model's memory when idle; long text is processed in chunks you can cancel with Esc.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

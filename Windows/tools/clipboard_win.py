@@ -145,14 +145,33 @@ def get_text():
         _user32.CloseClipboard()
 
 
-def set_text(text, private=True):
+def set_text(text, private=True, html=None):
+    """Put `text` (and optionally CF_HTML bytes) on the clipboard."""
     if not _open():
         return False
     try:
         _user32.EmptyClipboard()
         if private:
             _mark_private()
+        if html:
+            f = _fmt("HTML Format")
+            if f:
+                _set(f, html)
         return _set(CF_UNICODETEXT, (text + "\0").encode("utf-16-le"))
+    finally:
+        _user32.CloseClipboard()
+
+
+def get_html():
+    """The clipboard's "HTML Format" (CF_HTML) payload as bytes, or None."""
+    f = _fmt("HTML Format")
+    if not f or not _user32.IsClipboardFormatAvailable(f):
+        return None
+    if not _open():
+        return None
+    try:
+        h = _user32.GetClipboardData(f)
+        return _read_handle(h) if h else None
     finally:
         _user32.CloseClipboard()
 

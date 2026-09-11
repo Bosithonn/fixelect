@@ -1,17 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
 block_cipher = None
+SHARED = os.path.join(os.path.dirname(os.path.abspath(SPECPATH)), 'shared')   # code shared with Windows
+APP_VERSION = open(os.path.join(SHARED, 'version.py')).read().split('APP_VERSION = "')[1].split('"')[0]
 
 a = Analysis(
     ['fixelect_mac.py'],
-    pathex=['tools'],
+    pathex=['tools', SHARED],
     binaries=[],
     datas=[
         ('resources', 'resources'),
-        ('dictionary.txt', '.'),
-        ('freq.txt', '.'),
-        ('words.txt', '.'),
-        ('shorthand.txt', '.'),
+        (os.path.join(SHARED, 'data', 'dictionary.txt'), '.'),
+        (os.path.join(SHARED, 'data', 'words.txt'), '.'),
+        (os.path.join(SHARED, 'data', 'shorthand.txt'), '.'),
         ('resources/PRIVACY_POLICY.md', '.'),
         ('resources/LICENSE.txt', '.'),
     ],
@@ -20,14 +23,22 @@ a = Analysis(
         'tools.config_mac',
         'tools.hardware_mac',
         'tools.downloader_mac',
-        'tools.check_guard',
         'tools.engine_mac',
         'tools.clipboard_mac',
         'tools.hotkey_mac',
         'tools.status_bar',
-        'tools.ui_mac',
-        'tools.ui_kit',
-        'ui_mac',
+        'tools.apps_mac',
+        'tools.hud_mac',
+        'apps_mac',
+        'hud_mac',
+        'check_guard',
+        'languages',
+        'chunking',
+        'richtext',
+        'updater',
+        'diagnostics',
+        'version',
+        'ui',
         'ui_kit',
         'engine_mac',
         'status_bar',
@@ -42,6 +53,7 @@ a = Analysis(
         'AppKit',
         'Cocoa',
         'PyObjCTools',
+        'PyObjCTools.AppHelper',
     ],
     hookspath=[],
     hooksconfig={},
@@ -92,8 +104,8 @@ app = BUNDLE(
     info_plist={
         'CFBundleDisplayName': 'Fixelect',
         'CFBundleName': 'Fixelect',
-        'CFBundleVersion': '1.0.0',
-        'CFBundleShortVersionString': '1.0.0',
+        'CFBundleVersion': APP_VERSION,
+        'CFBundleShortVersionString': APP_VERSION,
         'LSMinimumSystemVersion': '11.0',
         'LSUIElement': True,
         'NSRequiresAquaSystemAppearance': False,

@@ -5,12 +5,12 @@ from pathlib import Path
 
 block_cipher = None
 project_root = os.path.abspath(SPECPATH)
+shared_root = os.path.join(os.path.dirname(project_root), 'shared')   # code shared with macOS
 
 datas = [
-    (os.path.join(project_root, 'dictionary.txt'), '.'),
-    (os.path.join(project_root, 'shorthand.txt'), '.'),
-    (os.path.join(project_root, 'words.txt'), '.'),
-    (os.path.join(project_root, 'freq.txt'), '.'),
+    (os.path.join(shared_root, 'data', 'dictionary.txt'), '.'),
+    (os.path.join(shared_root, 'data', 'shorthand.txt'), '.'),
+    (os.path.join(shared_root, 'data', 'words.txt'), '.'),
     (os.path.join(project_root, 'LICENSE.txt'), '.'),
     (os.path.join(project_root, 'PRIVACY_POLICY.md'), '.'),
     (os.path.join(project_root, 'resources'), 'resources'),
@@ -31,17 +31,23 @@ hidden_imports = [
     'psutil',
     'winreg',
     'tools',
-    'tools.check_guard',
     'tools.config',
     'tools.downloader',
     'tools.engine',
     'tools.hardware',
     'tools.tray',
-    'tools.ui',
     'tools.hotkey_win',
     'tools.clipboard_win',
-    'tools.ui_kit',
     'clipboard_win',
+    'apps_win',
+    'hud_win',
+    'check_guard',
+    'languages',
+    'chunking',
+    'richtext',
+    'updater',
+    'diagnostics',
+    'version',
     'ui_kit',
     'ui',
     'tray',
@@ -52,7 +58,7 @@ hidden_imports = [
 
 a = Analysis(
     ['fixelect.py'],
-    pathex=[project_root, os.path.join(project_root, 'tools')],
+    pathex=[project_root, os.path.join(project_root, 'tools'), shared_root],
     binaries=binaries,
     datas=datas,
     hiddenimports=hidden_imports,
