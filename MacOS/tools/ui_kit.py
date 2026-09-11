@@ -686,13 +686,24 @@ class ShortcutRecorder(Button):
 
 
 class ScrollArea(tk.Frame):
-    """Vertical scroll container (mouse wheel + slim thumb) for long lists."""
+    """Vertical scroll container with smooth wheel/touchpad scrolling and a draggable thumb.
+
+    The wheel handler is bound once on the toplevel (every descendant carries
+    the toplevel in its bindtags) and scrolls only when the pointer is over this
+    area. The old Enter/Leave toggling unbound the wheel whenever the pointer
+    moved from the list onto a card, so scrolling worked only in the gaps.
+    """
+
+    STEP = 64          # px per wheel notch
+    EASE = 0.28        # fraction of the remaining distance covered per frame
+    FRAME_MS = 12
 
     def __init__(self, parent, height):
         bg = parent.cget("bg")
         super().__init__(parent, bg=bg)
-        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, height=px(height))
-        self.bar = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, width=px(6))
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, height=px(height),
+                                yscrollincrement=1)
+        self.bar = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0, width=px(6), cursor="hand2")
         self.inner = tk.Frame(self.canvas, bg=bg)
         self._win = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -700,9 +711,30 @@ class ScrollArea(tk.Frame):
         self.canvas.bind("<Configure>", self._resize)
         self.inner.bind("<Configure>", lambda e: self._update())
         self.canvas.configure(yscrollcommand=lambda a, b: self._thumb(float(a), float(b)))
-        for w in (self.canvas, self.inner, self.bar):
-            w.bind("<Enter>", lambda e: self._wheel(True))
-            w.bind("<Leave>", lambda e: self._wheel(False))
+        self.bar.bind("<ButtonPress-1>", self._drag_start)
+        self.bar.bind("<B1-Motion>", self._drag)
+        self._target = None
+        self._animating = False
+        self._frac = 0.0     # a touchpad sends many tiny deltas; keep the remainder
+        self._drag_from = None
+        top = self.winfo_toplevel()
+        self._bindings = [
+            (seq, top.bind(seq, self._on_wheel, add="+"))
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>")
+        ]
+        self.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _on_destroy(self, e):
+        if e.widget is not self:
+            return
+        top = self.winfo_toplevel()
+        for seq, funcid in self._bindings:
+            try:
+                top.unbind(seq, funcid)
+            except tk.TclError:
+                pass
+
+    # -- geometry ------------------------------------------------------------
 
     def _resize(self, e):
         self.canvas.itemconfigure(self._win, width=e.width)
@@ -711,29 +743,91 @@ class ScrollArea(tk.Frame):
     def _update(self):
         self.canvas.configure(scrollregion=(0, 0, self.inner.winfo_reqwidth(), self.inner.winfo_reqheight()))
 
+    def _content_h(self):
+        return self.inner.winfo_reqheight()
+
+    def _max_y(self):
+        return max(0, self._content_h() - self.canvas.winfo_height())
+
+    def _top(self):
+        return self.canvas.canvasy(0)
+
+    def _scroll_to(self, y):
+        h = self._content_h()
+        if h > 0:
+            self.canvas.yview_moveto(max(0.0, min(y, self._max_y())) / h)
+
     def _thumb(self, a, b):
         self.bar.delete("all")
         if b - a >= 0.999:
             return
         h = self.bar.winfo_height()
-        y1, y2 = int(a * h), max(int(a * h) + px(20), int(b * h))
+        y1, y2 = int(a * h), max(int(a * h) + px(24), int(b * h))
         draw_round_rect(self.bar, 0, y1, px(6), y2 - y1, px(3), SURFACE_4, tag="thumb")
 
-    def _wheel(self, on):
-        if on:
-            self.bind_all("<MouseWheel>", self._on_wheel)
-            self.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-2, "units"))
-            self.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(2, "units"))
-        else:
-            self.unbind_all("<MouseWheel>")
-            self.unbind_all("<Button-4>")
-            self.unbind_all("<Button-5>")
+    # -- wheel ---------------------------------------------------------------
+
+    def _pointer_inside(self, e):
+        try:
+            x, y = e.x_root, e.y_root
+            cx, cy = self.canvas.winfo_rootx(), self.canvas.winfo_rooty()
+            return (cx <= x < cx + self.canvas.winfo_width() + self.bar.winfo_width() + px(6)
+                    and cy <= y < cy + self.canvas.winfo_height())
+        except tk.TclError:
+            return False
 
     def _on_wheel(self, e):
-        if self.inner.winfo_reqheight() <= self.canvas.winfo_height():
+        if not self.winfo_exists() or not self.winfo_ismapped() or not self._pointer_inside(e):
+            return None
+        if self._max_y() <= 0:
+            return "break"
+        if e.num == 4:
+            notches = 1.0
+        elif e.num == 5:
+            notches = -1.0
+        elif IS_MAC:
+            notches = e.delta / 3.0     # Tk on macOS reports small, already-scaled deltas
+        else:
+            notches = e.delta / 120.0   # precision touchpads send fractions of a notch
+        self._frac += -notches * px(self.STEP)
+        step, self._frac = int(self._frac), self._frac - int(self._frac)
+        if step:
+            base = self._target if self._target is not None else self._top()
+            self._target = max(0, min(base + step, self._max_y()))
+            if not self._animating:
+                self._animating = True
+                self._animate()
+        return "break"
+
+    def _animate(self):
+        if self._target is None or not self.winfo_exists():
+            self._animating = False
             return
-        delta = e.delta if IS_MAC else e.delta // 120
-        self.canvas.yview_scroll(-delta * (1 if IS_MAC else 2), "units")
+        cur = self._top()
+        diff = self._target - cur
+        if abs(diff) < 1:
+            self._scroll_to(self._target)
+            self._target = None
+            self._animating = False
+            return
+        move = diff * self.EASE
+        if abs(move) < 1:
+            move = 1 if diff > 0 else -1
+        self._scroll_to(cur + move)
+        self.after(self.FRAME_MS, self._animate)
+
+    # -- thumb drag ------------------------------------------------------------
+
+    def _drag_start(self, e):
+        self._target = None
+        self._drag_from = (e.y, self._top())
+
+    def _drag(self, e):
+        if not self._drag_from or self.bar.winfo_height() <= 0:
+            return
+        y0, top0 = self._drag_from
+        ratio = self._content_h() / self.bar.winfo_height()
+        self._scroll_to(top0 + (e.y - y0) * ratio)
 
 
 # ---------------------------------------------------------------------------
