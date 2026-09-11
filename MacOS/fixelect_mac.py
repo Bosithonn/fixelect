@@ -46,7 +46,7 @@ for _p in (_here / "tools", pathlib.Path(getattr(sys, "_MEIPASS", _here)) / "too
 
 from config_mac import load_config, get_hotkey_label, get_lock_path, get_config_path, play_sound  # noqa: E402
 from downloader_mac import resolve_model, MODELS  # noqa: E402
-from check_guard import load_pipeline, fix_preserving_layout, normalise, expand  # noqa: E402
+from check_guard import load_pipeline, fix_preserving_layout, normalise, expand, is_probably_english  # noqa: E402
 import clipboard_mac as clip  # noqa: E402
 from hotkey_mac import MacHotkeyListener, check_accessibility_permissions  # noqa: E402
 
@@ -220,6 +220,10 @@ class MacApp:
         if len(text) > MAX_SELECTION_CHARS:
             self._schedule_restore(original, 0.05)
             notify("Selection too long", f"Select fewer than {MAX_SELECTION_CHARS:,} characters at a time.")
+            return
+        if not is_probably_english(text):
+            self._schedule_restore(original, 0.05)
+            notify("Only English for now", "Fixelect leaves text in other languages unchanged.")
             return
         if self.fix is None and not self._load_engine():
             self._schedule_restore(original, 0.05)

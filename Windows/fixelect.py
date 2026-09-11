@@ -184,7 +184,7 @@ def play_fix_sound(mode="fix"):
 # Text layout
 # --------------------------------------------------------------------------
 
-from check_guard import fix_preserving_layout, split_edges as _split_edges  # noqa: E402
+from check_guard import fix_preserving_layout, is_probably_english, split_edges as _split_edges  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -578,6 +578,10 @@ class FixelectApp:
         if len(text) > MAX_SELECTION_CHARS:
             self._schedule_restore(original, 0.05)
             self.notify("Selection too long", f"Select fewer than {MAX_SELECTION_CHARS:,} characters at a time.")
+            return
+        if not is_probably_english(text):
+            self._schedule_restore(original, 0.05)
+            self.notify("Only English for now", "Fixelect leaves text in other languages unchanged.")
             return
 
         started = time.time()
