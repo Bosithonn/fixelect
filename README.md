@@ -29,7 +29,7 @@ Pre-built, standalone installers are automatically generated for every release:
 - **Effortless Double-Taps (Default on Windows & macOS)**:
   - Double-tap `Alt` (`Alt Alt` on Windows) or `⌥ Option` (`⌥ ⌥` on Mac) → Instant Grammar & Typo Fix
   - Double-tap `Ctrl` (`Ctrl Ctrl` on Windows) or `⌃ Control` (`⌃ ⌃` on Mac) → Executive & Professional Polish
-  - `Ctrl + Alt + Q` (Windows) / `⌥ ⌘ Q` (Mac) → Graceful Quit
+  - `Ctrl + Alt + Q` (Windows) or the menu bar icon (Mac) → Quit
 - **Flexible Presets & Full Customization**:
   - Double-Tap Modifiers (Fastest, 1-hand thumb triggers)
   - `Alt + Space` / `⌥ Space` quick combos
@@ -114,5 +114,5 @@ Fixelect is engineered with strict zero-telemetry principles:
 ## 📄 License & Attribution
 
 - **Author**: Bositxon Erkinxonov
-- **License**: MIT License. See [LICENSE](file:///c:/Users/Legion/Desktop/Fixelect/LICENSE).
+- **License**: MIT License. See [LICENSE](LICENSE).
 

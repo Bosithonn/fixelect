@@ -1,193 +1,190 @@
 """
-macOS Native Clipboard Bridge and Synthetic Keystroke Injector for Fixelect.
-Implements:
-- NSPasteboard (PyObjC) & pbcopy/pbpaste synchronization
-- Synthetic Cmd+C and Cmd+V keystrokes via Quartz CGEvent or AppleScript
-- Safe retry loops and transient clipboard restoration
+macOS pasteboard bridge and synthetic Cmd+C / Cmd+V for Fixelect.
+
+  * snapshot()/restore() keep EVERY pasteboard item and type, so an image,
+    rich text or a file the user had copied survives a fix (the old code saved
+    the *selection* after Cmd+C and "restored" that, losing the real clipboard).
+  * Our temporary text is tagged org.nspasteboard.TransientType/ConcealedType,
+    the convention clipboard managers (Maccy, Raycast, Alfred...) honour.
+  * wait_for_modifiers() stops Cmd+C being sent while ⌥/⌃ are still held.
 """
 
 import subprocess
 import sys
-import threading
 import time
 
-# Attempt to load native Quartz CGEvent APIs if on macOS
+_has_appkit = False
 _has_quartz = False
 if sys.platform == "darwin":
     try:
-        from Quartz import (
-            CGEventCreateKeyboardEvent,
-            CGEventPost,
-            kCGHIDEventTap,
-            kCGEventFlagMaskCommand,
-            CGEventSetFlags,
-        )
+        from AppKit import NSPasteboard, NSPasteboardItem, NSPasteboardTypeString
+        _has_appkit = True
+    except Exception:
+        pass
+    try:
+        import Quartz
         _has_quartz = True
-    except Exception:
-        _has_quartz = False
-
-# Fallback keyboard simulator via pynput if Quartz is not loaded
-_pynput_kb = None
-try:
-    from pynput.keyboard import Controller, Key
-    _pynput_kb = Controller()
-except Exception:
-    pass
-
-
-def get_clipboard() -> str:
-    """Read current text from the macOS system clipboard."""
-    # 1. Try PyObjC NSPasteboard
-    if sys.platform == "darwin":
-        try:
-            from AppKit import NSPasteboard, NSStringPboardType
-            pb = NSPasteboard.generalPasteboard()
-            content = pb.stringForType_(NSStringPboardType)
-            if content is not None:
-                return str(content)
-        except Exception:
-            pass
-
-    # 2. Universal macOS pbpaste CLI tool
-    try:
-        res = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=1.0)
-        return res.stdout or ""
-    except Exception:
-        return ""
-
-
-def set_clipboard(text: str) -> bool:
-    """Write text to the macOS system clipboard with retry logic."""
-    for attempt in range(4):
-        # 1. Try PyObjC NSPasteboard
-        if sys.platform == "darwin":
-            try:
-                from AppKit import NSPasteboard, NSStringPboardType
-                pb = NSPasteboard.generalPasteboard()
-                pb.clearContents()
-                pb.setString_forType_(text, NSStringPboardType)
-                return True
-            except Exception:
-                pass
-
-        # 2. Universal macOS pbcopy CLI tool
-        try:
-            p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE, text=True)
-            p.communicate(input=text, timeout=1.0)
-            if p.returncode == 0:
-                return True
-        except Exception:
-            time.sleep(0.05)
-
-    return False
-
-
-def simulate_cmd_key(char: str) -> None:
-    """
-    Simulate a native Cmd + <char> keystroke (e.g. Cmd+C or Cmd+V).
-    Prefers high-speed Quartz CGEvent, falls back to pynput or AppleScript.
-    """
-    char_lower = char.lower()
-
-    # 1. High-speed Quartz CGEvent (0.5ms latency)
-    if _has_quartz:
-        # macOS virtual key codes: 'c' = 8, 'v' = 9
-        vk_code = 8 if char_lower == "c" else (9 if char_lower == "v" else 0)
-        if vk_code != 0:
-            try:
-                # Key down
-                ev_down = CGEventCreateKeyboardEvent(None, vk_code, True)
-                CGEventSetFlags(ev_down, kCGEventFlagMaskCommand)
-                CGEventPost(kCGHIDEventTap, ev_down)
-                time.sleep(0.015)
-
-                # Key up
-                ev_up = CGEventCreateKeyboardEvent(None, vk_code, False)
-                CGEventSetFlags(ev_up, 0)
-                CGEventPost(kCGHIDEventTap, ev_up)
-                return
-            except Exception:
-                pass
-
-    # 2. pynput fallback
-    if _pynput_kb:
-        try:
-            with _pynput_kb.pressed(Key.cmd):
-                _pynput_kb.press(char_lower)
-                _pynput_kb.release(char_lower)
-            return
-        except Exception:
-            pass
-
-    # 3. AppleScript System Events fallback
-    try:
-        script = f'tell application "System Events" to keystroke "{char_lower}" using command down'
-        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=1.5)
     except Exception:
         pass
 
+TRANSIENT_TYPES = ("org.nspasteboard.TransientType", "org.nspasteboard.ConcealedType",
+                   "org.nspasteboard.AutoGeneratedType")
+_KEY_C, _KEY_V = 8, 9
 
-def get_pasteboard_change_count() -> int:
-    """Return the current changeCount of the general pasteboard on macOS."""
-    if sys.platform == "darwin":
+
+def _pb():
+    return NSPasteboard.generalPasteboard()
+
+
+def change_count() -> int:
+    if _has_appkit:
         try:
-            from AppKit import NSPasteboard
-            return int(NSPasteboard.generalPasteboard().changeCount())
+            return int(_pb().changeCount())
         except Exception:
             pass
     return -1
 
 
-def safe_copy(timeout: float = 0.22) -> str:
-    """
-    Trigger Cmd+C in active application and poll clipboard for the selected text.
-    Uses NSPasteboard changeCount to guarantee that text was ACTUALLY selected,
-    completely preventing accidental overwriting when the selection was empty!
-    """
-    initial_count = get_pasteboard_change_count()
-    old_clip = get_clipboard()
+def get_text():
+    if _has_appkit:
+        try:
+            s = _pb().stringForType_(NSPasteboardTypeString)
+            return None if s is None else str(s)
+        except Exception:
+            pass
+    try:
+        return subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=1.0).stdout
+    except Exception:
+        return None
 
+
+def set_text(text: str, transient: bool = True) -> bool:
+    if _has_appkit:
+        try:
+            pb = _pb()
+            pb.clearContents()
+            pb.setString_forType_(text, NSPasteboardTypeString)
+            if transient:
+                for t in TRANSIENT_TYPES:
+                    pb.setString_forType_("", t)
+            return True
+        except Exception:
+            pass
+    try:
+        p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE, text=True)
+        p.communicate(input=text, timeout=1.0)
+        return p.returncode == 0
+    except Exception:
+        return False
+
+
+def snapshot():
+    """Every item/type on the pasteboard as [{type: NSData}], [] if empty, None if unavailable."""
+    if not _has_appkit:
+        text = get_text()
+        return None if text is None else [{"__text__": text}]
+    try:
+        items = []
+        for item in _pb().pasteboardItems() or []:
+            entry = {}
+            for t in item.types() or []:
+                data = item.dataForType_(t)
+                if data is not None:
+                    entry[str(t)] = data
+            if entry:
+                items.append(entry)
+        return items
+    except Exception:
+        return None
+
+
+def restore(items, transient: bool = True) -> bool:
+    if items is None:
+        return False
+    if not _has_appkit:
+        return set_text(items[0].get("__text__", "") if items else "", transient=False)
+    try:
+        pb = _pb()
+        pb.clearContents()
+        objs = []
+        for entry in items:
+            it = NSPasteboardItem.alloc().init()
+            for t, data in entry.items():
+                it.setData_forType_(data, t)
+            objs.append(it)
+        if objs:
+            pb.writeObjects_(objs)
+        return True
+    except Exception:
+        return False
+
+
+def _modifiers_down() -> bool:
+    if not _has_quartz:
+        return False
+    try:
+        flags = Quartz.CGEventSourceFlagsState(Quartz.kCGEventSourceStateHIDSystemState)
+        mask = (Quartz.kCGEventFlagMaskCommand | Quartz.kCGEventFlagMaskAlternate
+                | Quartz.kCGEventFlagMaskControl | Quartz.kCGEventFlagMaskShift)
+        return bool(flags & mask)
+    except Exception:
+        return False
+
+
+def wait_for_modifiers(timeout: float = 0.5) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline and _modifiers_down():
+        time.sleep(0.01)
+
+
+def simulate_cmd_key(char: str) -> None:
+    code = _KEY_C if char.lower() == "c" else _KEY_V
+    if _has_quartz:
+        try:
+            src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateCombinedSessionState)
+            down = Quartz.CGEventCreateKeyboardEvent(src, code, True)
+            Quartz.CGEventSetFlags(down, Quartz.kCGEventFlagMaskCommand)
+            up = Quartz.CGEventCreateKeyboardEvent(src, code, False)
+            Quartz.CGEventSetFlags(up, Quartz.kCGEventFlagMaskCommand)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+            time.sleep(0.012)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+            return
+        except Exception:
+            pass
+    try:
+        from pynput.keyboard import Controller, Key
+        kb = Controller()
+        with kb.pressed(Key.cmd):
+            kb.press(char)
+            kb.release(char)
+    except Exception:
+        subprocess.run(["osascript", "-e",
+                        f'tell application "System Events" to keystroke "{char}" using command down'],
+                       capture_output=True, timeout=1.5)
+
+
+def copy_selection(timeout: float = 0.8) -> bool:
+    """Cmd+C and wait for the pasteboard to change. False means nothing was selected."""
+    before = change_count()
     simulate_cmd_key("c")
-
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        # If native changeCount changed, a copy definitely occurred!
-        current_count = get_pasteboard_change_count()
-        if initial_count != -1 and current_count != -1:
-            if current_count != initial_count:
-                return get_clipboard()
-        else:
-            now_clip = get_clipboard()
-            if now_clip != old_clip:
-                return now_clip
-        time.sleep(0.025)
-
-    # If changeCount did NOT change, no text was selected! Abort safely.
-    if initial_count != -1 and get_pasteboard_change_count() == initial_count:
-        return ""
-
-    now_clip = get_clipboard()
-    if now_clip != old_clip:
-        return now_clip
-    return ""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.015)
+        if change_count() != before:
+            time.sleep(0.02)
+            return True
+    return before == -1 and bool(get_text())
 
 
-def safe_paste(replacement_text: str, restore_delay: float = 0.85) -> None:
-    """
-    Write replacement text to clipboard, simulate Cmd+V, then restore original clipboard.
-    Preserves transient clipboard so user data is never lost.
-    """
-    saved_clip = get_clipboard()
-
-    set_clipboard(replacement_text)
-    time.sleep(0.03)
+def paste() -> None:
     simulate_cmd_key("v")
-    time.sleep(0.08)
 
-    if saved_clip and saved_clip != replacement_text:
-        def _restore():
-            time.sleep(restore_delay)
-            # Only restore if clipboard still has our replacement text
-            if get_clipboard() == replacement_text:
-                set_clipboard(saved_clip)
-        threading.Thread(target=_restore, daemon=True).start()
+
+# Backwards-compatible helpers used by older callers.
+def get_clipboard() -> str:
+    return get_text() or ""
+
+
+def set_clipboard(text: str) -> bool:
+    return set_text(text, transient=False)

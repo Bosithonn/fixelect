@@ -45,8 +45,6 @@ asap=as soon as possible
 # Contractions. These are unambiguous, unlike "its".
 im=I'm
 ive=I've
-id=I'd
-ill=I'll
 dont=don't
 cant=can't
 wont=won't
@@ -65,7 +63,6 @@ youre=you're
 theyre=they're
 thats=that's
 whats=what's
-lets=let's
 
 # Informal but real words, so the dictionary rule in guard.rs protects them.
 # They are only expanded because they are listed here - delete the line to keep

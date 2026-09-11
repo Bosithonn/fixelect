@@ -1,290 +1,219 @@
 """
-macOS Global Hotkey Dispatcher and Accessibility Permissions Handler.
-Supports:
-- Default Double-Tap Modifiers:
-    Option x2 (⌥ ⌥) -> Default Fix Mode
-    Control x2 (⌃ ⌃) -> Professional Polish Mode
-- Option + Space preset (⌥ Space / ⌥⇧ Space)
-- Classic 3-Key preset (Cmd + Option + F / P)
-- Fully customizable combinations
-- System Settings Accessibility verification (AXIsProcessTrustedWithOptions)
-- Non-blocking background event loop with live config reloading
+macOS global triggers for Fixelect and the Accessibility permission check.
+
+    Option  x2 (⌥ ⌥)  -> Fix
+    Control x2 (⌃ ⌃)  -> Polish
+    Presets: ⌥ Space / ⌥⇧ Space, ⌘⌥F / ⌘⌥P, or custom combinations.
+
+There is deliberately NO global quit shortcut: pynput cannot swallow keys on
+macOS, so the old ⌘⌥Q also reached the frontmost app - where ⌘Q quits it.
+Quit lives in the menu bar instead.
 """
 
 import subprocess
 import sys
 import threading
 import time
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 try:
     from pynput import keyboard
     _has_pynput = True
 except ImportError:
+    keyboard = None
     _has_pynput = False
 
-# Import config helpers
 try:
     from config_mac import load_config
-except ImportError:
+except ImportError:  # pragma: no cover
     def load_config():
-        return {
-            "trigger_mode": "double_tap",
-            "hotkey_fix": "double_option",
-            "hotkey_polish": "double_control",
-            "custom_fix": "<cmd>+<alt>+f",
-            "custom_polish": "<cmd>+<alt>+p",
-        }
+        return {"trigger_mode": "double_tap"}
 
 
-def check_accessibility_permissions(prompt: bool = True) -> bool:
-    """
-    Check if the process has macOS Accessibility permissions to monitor hotkeys.
-    If prompt=True and permissions are missing, macOS displays the native permission dialog.
-    """
+def check_accessibility_permissions(prompt: bool = False) -> bool:
+    """True if this app may observe the keyboard. prompt=True shows Apple's dialog once."""
     if sys.platform != "darwin":
         return True
-
-    # 1. Try PyObjC ApplicationServices
     try:
         from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
-        options = {kAXTrustedCheckOptionPrompt: prompt}
-        return bool(AXIsProcessTrustedWithOptions(options))
+        return bool(AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: bool(prompt)}))
     except Exception:
         pass
-
-    # 2. Check via AppleScript
     try:
-        cmd = 'osascript -e "tell application \\"System Events\\" to return UI elements enabled"'
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=2.0)
-        if "true" in res.stdout.lower():
-            return True
+        from ApplicationServices import AXIsProcessTrusted
+        return bool(AXIsProcessTrusted())
     except Exception:
         pass
+    try:
+        res = subprocess.run(
+            ["osascript", "-e", 'tell application "System Events" to return UI elements enabled'],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        return "true" in res.stdout.lower()
+    except Exception:
+        return True  # cannot tell; don't nag
 
-    return True
+
+class _Tap:
+    __slots__ = ("down_at", "spoiled", "last_tap_at")
+
+    def __init__(self):
+        self.down_at = 0.0
+        self.spoiled = False
+        self.last_tap_at = 0.0
+
+    def reset(self):
+        self.down_at, self.spoiled, self.last_tap_at = 0.0, False, 0.0
 
 
 class MacHotkeyListener:
-    """
-    Background global hotkey dispatcher for macOS.
-    Supports double-tap modifiers (Option x2, Control x2) as well as
-    standard hotkey combinations and custom user-defined shortcuts.
-    """
+    DOUBLE_TAP_MAX_INTERVAL = 0.40
+    TAP_MAX_HOLD = 0.32
+    STALE_PRESS = 2.0
 
-    DOUBLE_TAP_MAX_INTERVAL = 0.38  # max seconds between consecutive taps
-    TAP_MAX_HOLD = 0.32             # max duration a modifier can be held to count as a tap
-
-    def __init__(self, on_fix: Callable, on_polish: Callable, on_quit: Optional[Callable] = None, config: Optional[dict] = None):
+    def __init__(self, on_fix: Callable, on_polish: Callable,
+                 on_quit: Optional[Callable] = None, config: Optional[dict] = None):
         self.on_fix = on_fix
         self.on_polish = on_polish
-        self.on_quit = on_quit
+        self.on_quit = on_quit  # kept for API compatibility; no global quit key
         self.config = config or load_config()
         self.listener = None
-        self._running = False
         self._lock = threading.RLock()
+        self._suspended = False
+        self._opt = _Tap()
+        self._ctrl = _Tap()
 
-        # Double-tap tracking state
-        self._active_keys = set()
-        self._non_modifier_pressed = False
-        self._option_press_time = 0.0
-        self._last_option_release_time = 0.0
-        self._ctrl_press_time = 0.0
-        self._last_ctrl_release_time = 0.0
+    @property
+    def active(self):
+        return self.listener is not None
 
     def start(self) -> bool:
-        if not _has_pynput:
-            print("  ! warning: pynput module not installed. Global hotkeys unavailable.")
-            return False
-
-        check_accessibility_permissions(prompt=True)
         with self._lock:
-            return self._start_listener_unlocked()
+            return self._start_unlocked()
 
     def stop(self):
         with self._lock:
             self._stop_unlocked()
 
+    def reload(self, new_config: Optional[dict] = None) -> bool:
+        with self._lock:
+            self._stop_unlocked()
+            self.config = new_config or load_config()
+            return self._start_unlocked()
+
+    def suspend(self, flag: bool):
+        self._suspended = bool(flag)
+        self._opt.reset()
+        self._ctrl.reset()
+
+    def _start_unlocked(self) -> bool:
+        if not _has_pynput:
+            print("  ! pynput not installed - global triggers unavailable")
+            return False
+        mode = self.config.get("trigger_mode", "double_tap")
+        try:
+            if mode == "double_tap":
+                self._opt.reset()
+                self._ctrl.reset()
+                self.listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
+            else:
+                combos = {}
+                if mode == "option_space":
+                    combos["<alt>+<space>"] = lambda: self._fire(self.on_fix)
+                    combos["<alt>+<shift>+<space>"] = lambda: self._fire(self.on_polish)
+                elif mode == "classic":
+                    combos["<cmd>+<alt>+f"] = lambda: self._fire(self.on_fix)
+                    combos["<cmd>+<alt>+p"] = lambda: self._fire(self.on_polish)
+                elif mode == "custom":
+                    for key, cb in (("custom_fix", self.on_fix), ("custom_polish", self.on_polish)):
+                        combo = self._normalize_combo(self.config.get(key, ""))
+                        if combo:
+                            combos[combo] = (lambda c=cb: self._fire(c))
+                if not combos:
+                    return True
+                self.listener = keyboard.GlobalHotKeys(combos)
+            self.listener.daemon = True
+            self.listener.start()
+            return True
+        except Exception as e:
+            print(f"  ! could not start hotkey listener ({mode}): {e}")
+            self.listener = None
+            return False
+
     def _stop_unlocked(self):
-        if self.listener:
+        if self.listener is not None:
             try:
                 self.listener.stop()
             except Exception:
                 pass
             self.listener = None
-        self._running = False
-
-    def reload(self, new_config: Optional[dict] = None) -> bool:
-        """Dynamically reload hotkeys with updated configuration without stopping daemon."""
-        with self._lock:
-            self._stop_unlocked()
-            if new_config:
-                self.config = new_config
-            else:
-                self.config = load_config()
-            return self._start_listener_unlocked()
-
-    def _start_listener_unlocked(self) -> bool:
-        trigger_mode = self.config.get("trigger_mode", "double_tap")
-
-        try:
-            if trigger_mode == "double_tap":
-                # Use raw Key listener to detect double-tap Option & Control
-                self.listener = keyboard.Listener(
-                    on_press=self._on_dt_press,
-                    on_release=self._on_dt_release
-                )
-                self.listener.start()
-                self._running = True
-                return True
-            else:
-                # Combination shortcuts
-                hotkey_map = {}
-                if trigger_mode == "option_space":
-                    hotkey_map["<alt>+<space>"] = self._handle_fix
-                    hotkey_map["<alt>+<shift>+<space>"] = self._handle_polish
-                elif trigger_mode == "classic":
-                    hotkey_map["<cmd>+<alt>+f"] = self._handle_fix
-                    hotkey_map["<cmd>+<alt>+p"] = self._handle_polish
-                elif trigger_mode == "custom":
-                    fix_key = self._normalize_combo(self.config.get("custom_fix", "<cmd>+<alt>+f"))
-                    pol_key = self._normalize_combo(self.config.get("custom_polish", "<cmd>+<alt>+p"))
-                    if fix_key:
-                        hotkey_map[fix_key] = self._handle_fix
-                    if pol_key:
-                        hotkey_map[pol_key] = self._handle_polish
-
-                if self.on_quit:
-                    hotkey_map["<cmd>+<alt>+q"] = self._handle_quit
-
-                self.listener = keyboard.GlobalHotKeys(hotkey_map)
-                self.listener.start()
-                self._running = True
-                return True
-
-        except Exception as e:
-            print(f"  ! Error starting hotkey listener ({trigger_mode}): {e}")
-            return False
 
     @staticmethod
     def _normalize_combo(combo: str) -> str:
-        """Convert friendly shortcut strings like 'Cmd+Option+F' into pynput '<cmd>+<alt>+f' format."""
-        if not combo:
-            return ""
-        s = combo.strip().lower()
-        replacements = [
-            ("command", "<cmd>"),
-            ("cmd", "<cmd>"),
-            ("option", "<alt>"),
-            ("alt", "<alt>"),
-            ("control", "<ctrl>"),
-            ("ctrl", "<ctrl>"),
-            ("shift", "<shift>"),
-            ("space", "<space>"),
-        ]
-        tokens = [t.strip() for t in s.split("+") if t.strip()]
+        """'Cmd+Option+F' / '<cmd>+<alt>+f' -> pynput's '<cmd>+<alt>+f'."""
+        names = {
+            "command": "<cmd>", "cmd": "<cmd>", "option": "<alt>", "opt": "<alt>", "alt": "<alt>",
+            "control": "<ctrl>", "ctrl": "<ctrl>", "shift": "<shift>", "space": "<space>",
+        }
         out = []
-        for t in tokens:
-            matched = False
-            for src, dst in replacements:
-                if t == src or t == dst:
-                    out.append(dst)
-                    matched = True
-                    break
-            if not matched:
+        for t in (combo or "").lower().replace(" ", "").split("+"):
+            t = t.strip("<>")
+            if not t:
+                continue
+            if t in names:
+                out.append(names[t])
+            elif len(t) > 1 and t[0] == "f" and t[1:].isdigit():
+                out.append(f"<{t}>")
+            else:
                 out.append(t)
         return "+".join(out)
 
-    def _is_option_key(self, key) -> bool:
-        if _has_pynput and (key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r)):
-            return True
-        return getattr(key, "name", "") in ("alt", "alt_l", "alt_r", "alt_gr")
+    # -- double-tap -----------------------------------------------------------
 
-    def _is_ctrl_key(self, key) -> bool:
-        if _has_pynput and (key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r)):
-            return True
-        return getattr(key, "name", "") in ("ctrl", "ctrl_l", "ctrl_r")
+    @staticmethod
+    def _kind(key):
+        if key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r):
+            return "opt"
+        if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            return "ctrl"
+        return "other"
 
-    def _is_modifier_key(self, key) -> bool:
-        if self._is_option_key(key) or self._is_ctrl_key(key):
-            return True
-        if _has_pynput and key in (
-            keyboard.Key.cmd, keyboard.Key.cmd_l, keyboard.Key.cmd_r,
-            keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r
-        ):
-            return True
-        return getattr(key, "name", "") in ("cmd", "cmd_l", "cmd_r", "shift", "shift_l", "shift_r")
-
-    def _on_dt_press(self, key):
-        self._active_keys.add(key)
-        now = time.time()
-
-        # Check for clean exit combo Cmd+Option+Q even in double-tap mode
-        if self.on_quit:
-            cmd_down = any(getattr(k, "name", "") in ("cmd", "cmd_l", "cmd_r") for k in self._active_keys)
-            alt_down = any(getattr(k, "name", "") in ("alt", "alt_l", "alt_r") for k in self._active_keys)
-            q_down = False
-            if hasattr(key, "char") and key.char and key.char.lower() == "q":
-                q_down = True
-            if cmd_down and alt_down and q_down:
-                self._handle_quit()
-                return
-
-        if self._is_option_key(key):
-            if len(self._active_keys) == 1:
-                self._option_press_time = now
-                self._non_modifier_pressed = False
+    def _on_press(self, key, injected=False):
+        if injected or self._suspended:
+            return
+        now = time.monotonic()
+        kind = self._kind(key)
+        for name, tap in (("opt", self._opt), ("ctrl", self._ctrl)):
+            if kind == name:
+                if tap.down_at == 0.0 or now - tap.down_at > self.STALE_PRESS:
+                    tap.down_at, tap.spoiled = now, False
+            elif tap.down_at:
+                tap.spoiled = True       # chord such as ⌥E or ⌃⌥
             else:
-                self._non_modifier_pressed = True
-        elif self._is_ctrl_key(key):
-            if len(self._active_keys) == 1:
-                self._ctrl_press_time = now
-                self._non_modifier_pressed = False
-            else:
-                self._non_modifier_pressed = True
-        else:
-            self._non_modifier_pressed = True
+                tap.last_tap_at = 0.0    # typing between taps breaks the sequence
 
-    def _on_dt_release(self, key):
-        now = time.time()
+    def _on_release(self, key, injected=False):
+        if injected or self._suspended:
+            return
+        kind = self._kind(key)
+        if kind == "opt" and self._register(self._opt):
+            self._fire(self.on_fix)
+        elif kind == "ctrl" and self._register(self._ctrl):
+            self._fire(self.on_polish)
 
-        if self._is_option_key(key):
-            duration = now - self._option_press_time
-            # Valid pure tap: held briefly and no character keys were typed simultaneously
-            if not self._non_modifier_pressed and duration <= self.TAP_MAX_HOLD:
-                since_last = now - self._last_option_release_time
-                if since_last <= self.DOUBLE_TAP_MAX_INTERVAL:
-                    # Double-tap Option detected!
-                    self._last_option_release_time = 0.0
-                    self._handle_fix()
-                else:
-                    self._last_option_release_time = now
+    def _register(self, tap) -> bool:
+        now = time.monotonic()
+        clean = tap.down_at and not tap.spoiled and (now - tap.down_at) <= self.TAP_MAX_HOLD
+        tap.down_at, tap.spoiled = 0.0, False
+        if not clean:
+            tap.last_tap_at = 0.0
+            return False
+        if tap.last_tap_at and now - tap.last_tap_at <= self.DOUBLE_TAP_MAX_INTERVAL:
+            tap.last_tap_at = 0.0
+            return True
+        tap.last_tap_at = now
+        return False
 
-        elif self._is_ctrl_key(key):
-            duration = now - self._ctrl_press_time
-            if not self._non_modifier_pressed and duration <= self.TAP_MAX_HOLD:
-                since_last = now - self._last_ctrl_release_time
-                if since_last <= self.DOUBLE_TAP_MAX_INTERVAL:
-                    # Double-tap Control detected!
-                    self._last_ctrl_release_time = 0.0
-                    self._handle_polish()
-                else:
-                    self._last_ctrl_release_time = now
-
-        self._active_keys.discard(key)
-        if not self._active_keys:
-            self._non_modifier_pressed = False
-
-    def _handle_fix(self):
-        if self.on_fix:
-            threading.Thread(target=self.on_fix, daemon=True).start()
-
-    def _handle_polish(self):
-        if self.on_polish:
-            threading.Thread(target=self.on_polish, daemon=True).start()
-
-    def _handle_quit(self):
-        if self.on_quit:
-            threading.Thread(target=self.on_quit, daemon=True).start()
-
-
+    def _fire(self, cb):
+        if cb and not self._suspended:
+            threading.Thread(target=cb, daemon=True).start()

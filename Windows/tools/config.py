@@ -19,7 +19,28 @@ DEFAULT_CONFIG = {
     "hotkey_polish": "double_control",
     "custom_fix": "Ctrl+Alt+F",
     "custom_polish": "Ctrl+Alt+P",
+    "prefetch_enabled": False,          # speculative fixes of selected text (uses more power)
 }
+
+_MODIFIER_TOKENS = {"ctrl", "control", "alt", "menu", "opt", "option", "shift", "win", "windows", "cmd", "super"}
+_FUNCTION_KEYS = {f"f{i}" for i in range(1, 13)}
+
+
+def validate_hotkey(combo: str):
+    """Return (ok, message). A usable global shortcut needs at least one modifier
+    (Ctrl / Alt / Win) plus a key, otherwise registering it would hijack normal typing."""
+    if not combo or not combo.strip():
+        return False, "Shortcut is empty."
+    tokens = [t.strip().lower().strip("<>") for t in combo.replace("+", " ").split() if t.strip()]
+    mods = [t for t in tokens if t in _MODIFIER_TOKENS]
+    keys = [t for t in tokens if t not in _MODIFIER_TOKENS]
+    if len(keys) != 1:
+        return False, "Use modifiers plus exactly one key, e.g. Ctrl+Alt+F."
+    if keys[0] in _FUNCTION_KEYS:
+        return True, ""
+    if not any(m not in ("shift",) for m in mods):
+        return False, "Add Ctrl, Alt or Win — a plain key would block normal typing."
+    return True, ""
 
 
 def get_hotkey_keycaps(mode: str = "fix", config: dict = None) -> list:
@@ -158,14 +179,52 @@ def load_config():
 
 
 def save_config(cfg):
-    """Save configuration dictionary to disk."""
+    """Save configuration dictionary to disk atomically (never leaves a half-written file)."""
     p = get_config_path()
+    tmp = p.with_suffix(".json.tmp")
     try:
-        with open(p, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
+        os.replace(tmp, p)
         return True
     except Exception:
         return False
+
+
+def update_config(**changes):
+    """Read the latest config from disk, apply `changes`, save, and return it.
+
+    Always use this instead of saving a long-lived dict: the tray, dashboard and
+    daemon each hold their own copy, and saving a stale copy silently reverts
+    settings another component just changed."""
+    cfg = load_config()
+    cfg.update(changes)
+    save_config(cfg)
+    return cfg
+
+
+def get_user_words_path():
+    """User-editable protected words live beside the config (the install dir may be read-only)."""
+    return get_config_dir() / "words.txt"
+
+
+def get_logs_dir():
+    p = get_config_dir() / "logs"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def log_error(message):
+    """Append a short diagnostic line (never user text) to the local log file."""
+    try:
+        import time as _t
+        path = get_logs_dir() / "fixelect.log"
+        if path.is_file() and path.stat().st_size > 512 * 1024:
+            path.write_text("", encoding="utf-8")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{_t.strftime('%Y-%m-%d %H:%M:%S')}  {message}\n")
+    except Exception:
+        pass
 
 
 def is_auto_start_enabled():

@@ -28,10 +28,19 @@ _tools_dir = pathlib.Path(__file__).resolve().parent
 if str(_tools_dir) not in sys.path:
     sys.path.insert(0, str(_tools_dir))
 try:
-    from config import get_resource_path
+    if sys.platform == "darwin":
+        from config_mac import get_resource_path, get_config_dir, load_config
+    else:
+        from config import get_resource_path, get_config_dir, load_config
 except ImportError:
     def get_resource_path(p):
         return pathlib.Path(__file__).resolve().parent.parent / p
+
+    def get_config_dir():
+        return pathlib.Path.home() / ".fixelect"
+
+    def load_config():
+        return {}
 
 # Harper's curated English dictionary, exported from harper-core. Not a
 # frequency list: "u", "abt" and "dont" appear in frequency data scraped from
@@ -42,26 +51,67 @@ _dict_file = get_resource_path("dictionary.txt")
 if _dict_file.exists():
     DICTIONARY = {w.strip().lower() for w in _dict_file.read_text(encoding="utf-8").split()}
 
-# User whitelist & custom vocabulary (words Fixelect will never touch)
-PROTECTED_WORDS = set()
+# Protected vocabulary (words Fixelect will never touch). The bundled list ships
+# with the app; the user's own list lives in the config directory, because the
+# install folder is read-only on macOS (signed bundle) and may be on Windows.
+def _read_word_file(path):
+    words = []
+    try:
+        if path.is_file():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    words.append(line)
+    except Exception:
+        pass
+    return words
+
+
 _words_file = get_resource_path("words.txt")
-if _words_file.exists():
-    for line in _words_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            PROTECTED_WORDS.add(line.lower())
+BUILTIN_WORDS = _read_word_file(_words_file)
+try:
+    _user_words_file = pathlib.Path(get_config_dir()) / "words.txt"
+except Exception:
+    _user_words_file = pathlib.Path.home() / ".fixelect_words.txt"
+PROTECTED_WORDS = {w.lower() for w in BUILTIN_WORDS + _read_word_file(_user_words_file)}
+
+
+def get_user_words():
+    return _read_word_file(_user_words_file)
+
+
+def _write_user_words(words):
+    _user_words_file.parent.mkdir(parents=True, exist_ok=True)
+    body = "# Your protected words. One per line.\n" + "\n".join(words) + ("\n" if words else "")
+    _user_words_file.write_text(body, encoding="utf-8")
+
+
+def _reload_protected():
+    PROTECTED_WORDS.clear()
+    PROTECTED_WORDS.update(w.lower() for w in BUILTIN_WORDS + get_user_words())
 
 
 def add_protected_word(word):
-    """Add a custom word or acronym to protected words and persist to words.txt."""
+    """Add a custom word or acronym to the user's protected words."""
     w = word.strip()
-    if not w:
+    if not w or any(c.isspace() for c in w):
         return False
-    PROTECTED_WORDS.add(w.lower())
     try:
-        target = _words_file if _words_file.exists() else get_resource_path("words.txt")
-        with open(target, "a", encoding="utf-8") as f:
-            f.write(f"\n{w}")
+        words = get_user_words()
+        if w.lower() not in {x.lower() for x in words}:
+            words.append(w)
+            _write_user_words(words)
+        _reload_protected()
+        return True
+    except Exception:
+        return False
+
+
+def remove_protected_word(word):
+    try:
+        words = [x for x in get_user_words() if x.lower() != word.strip().lower()]
+        _write_user_words(words)
+        _reload_protected()
         return True
     except Exception:
         return False
@@ -290,14 +340,16 @@ EXPANSIONS = {
     "msg": "message", "ppl": "people", "smth": "something", "tho": "though",
     "wht": "what", "wat": "what", "rn": "right now", "btw": "by the way",
     "hv": "have", "rly": "really",
-    # Contractions
-    "im": "I'm", "ive": "I've", "id": "I'd", "ill": "I'll",
+    # Contractions. "id", "ill" and "lets" are deliberately absent: they are real
+    # words ("user id", "feeling ill", "she lets me") and expanding them
+    # unconditionally inserted errors into correct text.
+    "im": "I'm", "ive": "I've",
     "dont": "don't", "cant": "can't", "wont": "won't",
     "didnt": "didn't", "isnt": "isn't", "wasnt": "wasn't", "arent": "aren't",
     "werent": "weren't", "doesnt": "doesn't", "hasnt": "hasn't",
     "havent": "haven't", "couldnt": "couldn't", "wouldnt": "wouldn't",
     "shouldnt": "shouldn't", "youre": "you're", "theyre": "they're",
-    "thats": "that's", "whats": "what's", "lets": "let's",
+    "thats": "that's", "whats": "what's",
     # Informal but real words, so the dictionary rule protects them.
     "kinda": "kind of", "tbh": "to be honest", "idk": "I don't know",
     "imo": "in my opinion", "imho": "in my humble opinion",
@@ -312,7 +364,7 @@ EXPANSIONS = {
     "haveto": "have to", "oughtto": "ought to", "supposedto": "supposed to",
     # High-frequency speed-typing transpositions & mis-keys (adjacent key swaps)
     "taht": "that", "tath": "that", "thta": "that",
-    "teh": "the", "hte": "the", "eth": "the",
+    "teh": "the", "hte": "the",
     "adn": "and", "nad": "and",
     "waht": "what", "whta": "what", "awht": "what",
     "woudl": "would", "coudl": "could", "shoudl": "should",
@@ -324,7 +376,7 @@ EXPANSIONS = {
     "untill": "until", "allways": "always",
     "definetly": "definitely", "definately": "definitely", "definatly": "definitely",
     "wierd": "weird", "wich": "which", "whcih": "which",
-    "wiht": "with", "wtih": "with", "whit": "with",
+    "wiht": "with", "wtih": "with",
     "haev": "have", "hvae": "have",
     "peopel": "people", "poeple": "people",
     "soem": "some", "smoe": "some",
@@ -707,6 +759,8 @@ def clean(reply, preserve_newlines=False):
 
     # The model imitating our own prompt back at us.
     for tag in ("<text>", "<draft>"):
+        if text.startswith(tag):
+            text = text[len(tag):].lstrip()
         text = text.split(tag)[0]
     text = text.replace("</text>", "").replace("</draft>", "")
 
@@ -857,7 +911,9 @@ def embedded_rewrites(engine, text, candidates=1, mode="fix"):
     budget = min(2048, max(64, int(word_count * 1.8 + 64)))
     out = []
 
-    for index in range(candidates):
+    # Fix mode samples at temperature 0, so every extra candidate is an exact
+    # repeat of the first: N candidates cost N times the latency for nothing.
+    for index in range(1):
         temp = 0.15 if mode == "polish" else 0.0
         messages = [
             {"role": "system", "content": sys_prompt},
@@ -880,6 +936,55 @@ def embedded_rewrites(engine, text, candidates=1, mode="fix"):
     return out
 
 
+def split_edges(text):
+    """(leading whitespace, core, trailing whitespace) of a selection."""
+    core = text.strip()
+    if not core:
+        return text, "", ""
+    start = text.index(core[0])
+    return text[:start], core, text[start + len(core):]
+
+
+_LIST_ITEM = r"^\s*(?:[-*+•]\s+|\d+[.)]\s+)"
+
+
+def fix_preserving_layout(text, fix_fn, mode="fix"):
+    """Fix text while preserving line breaks, indentation, list markers and the
+    selection's own leading/trailing whitespace (Word's double-click selects the
+    trailing space; dropping it glued the next word on)."""
+    lead, core, trail = split_edges(text)
+    if not core:
+        return text, [], text
+
+    if "\n" not in core and "\r" not in core:
+        fixed, applied, expanded = fix_fn(core)
+        return lead + fixed + trail, applied, expanded
+
+    if mode == "polish" and not any(re.match(_LIST_ITEM, ln) for ln in core.splitlines()):
+        fixed, applied, expanded = fix_fn(core)
+        return lead + fixed + trail, applied, expanded
+
+    newline = "\r\n" if "\r\n" in core else ("\n" if "\n" in core else "\r")
+    fixed_lines, all_applied, all_expanded, word_offset = [], [], [], 0
+    for line in core.split(newline):
+        if not line.strip():
+            fixed_lines.append(line)
+            continue
+        m = re.match(r"^(\s*(?:[-*+•]\s+|\d+[.)]\s+)?)(.*?)(\s*)$", line)
+        prefix, content, suffix = (m.group(1), m.group(2), m.group(3)) if m else ("", line, "")
+        if not content.strip():
+            fixed_lines.append(line)
+            continue
+        fixed_content, applied, expanded = fix_fn(content)
+        fixed_lines.append(prefix + fixed_content + suffix)
+        for s, e, words, votes in applied:
+            all_applied.append((s + word_offset, e + word_offset, words, votes))
+        word_offset += len(expanded.split())
+        all_expanded.append(expanded)
+
+    return lead + newline.join(fixed_lines) + trail, all_applied, " ".join(all_expanded)
+
+
 def load_pipeline(model_key="qwen2.5", fast=True, beams=BEAMS, engine_type="embedded"):
     """Build a `fix(text, mode='fix') -> (corrected, applied_edits, expanded)` callable.
 
@@ -889,19 +994,23 @@ def load_pipeline(model_key="qwen2.5", fast=True, beams=BEAMS, engine_type="embe
       - 'seq2seq': In-process PyTorch model
     """
     if engine_type == "embedded":
+        embedded_error = None
         try:
-            from engine import get_default_engine
+            if sys.platform == "darwin":
+                from engine_mac import get_default_engine
+            else:
+                from engine import get_default_engine
             try:
-                from config import load_config
-                cfg = load_config()
-                model_profile = cfg.get("model_profile") or ("1.5b" if "1.5" in model_key else "3b")
+                model_profile = load_config().get("model_profile") or ("1.5b" if "1.5" in model_key else "3b")
             except Exception:
                 model_profile = "1.5b" if "1.5" in model_key else "3b"
             eng = get_default_engine(model_profile=model_profile)
-            eng.start()
+            if eng.start() is False:
+                raise RuntimeError("llama-server unavailable")
 
             def fix_embedded(text, mode="fix"):
                 current_eng = get_default_engine()
+                current_eng.ensure_running()
                 expanded = expand(text)
                 if mode == "polish":
                     rewrites = embedded_rewrites(current_eng, expanded, candidates=1, mode="polish")
@@ -909,19 +1018,18 @@ def load_pipeline(model_key="qwen2.5", fast=True, beams=BEAMS, engine_type="embe
                         guarded = polish_guard(expanded, rewrites[0])
                         applied = [(0, len(expanded.split()), tuple(guarded.split()), 1)]
                         return guarded, applied, expanded
-                    # Fallback to fix mode if polish rewrite was empty
-                    rewrites = embedded_rewrites(current_eng, expanded, beams, mode="fix")
-                    final, applied, _ = consensus(expanded, rewrites)
-                    return final, applied, expanded
 
-                rewrites = embedded_rewrites(current_eng, expanded, beams, mode="fix")
+                rewrites = embedded_rewrites(current_eng, expanded, 1, mode="fix")
+                if not rewrites:
+                    return text, [], expanded
                 final, applied, _ = consensus(expanded, rewrites)
                 return final, applied, expanded
 
             fix_embedded("this is a warm up sentence")
             return fix_embedded
         except Exception as e:
-            print(f"  [EmbeddedEngine] Notice: {e}. Falling back to Ollama...")
+            embedded_error = e
+            print(f"  [EmbeddedEngine] Notice: {e}. Trying Ollama...")
             engine_type = "ollama"
 
     spec_kind = MODELS[model_key]["kind"]
@@ -954,8 +1062,13 @@ def load_pipeline(model_key="qwen2.5", fast=True, beams=BEAMS, engine_type="embe
             fix("this is a warm up sentence")
             return fix
 
-    import torch
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+    try:
+        import torch
+        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+    except ImportError:
+        # The shipped app bundles neither; surface the real reason instead of an ImportError.
+        reason = locals().get("embedded_error")
+        raise RuntimeError(str(reason) if reason else "No AI engine is available.")
 
     # One thread per physical core. The default oversubscribes on laptops with
     # hyperthreading and the threads end up fighting over cache.

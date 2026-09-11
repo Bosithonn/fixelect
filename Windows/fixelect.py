@@ -2,15 +2,17 @@
 Fixelect for Windows — 100% Offline AI Grammar Correction & Executive Polish
 Hardware-Accelerated Local Inference (CUDA / Vulkan / AVX2) • Global Hotkeys • Fluent Dark UI
 
-Triggers:
-  Alt x2 (Alt Alt)     ->  Proofread & Fix Grammar (Double-tap Alt; 100% voice preserved)
-  Ctrl x2 (Ctrl Ctrl)  ->  Executive & Professional Polish (Double-tap Ctrl; articulate clarity)
-  Ctrl + Alt + Q       ->  Quit Fixelect (or customize shortcuts in Dashboard)
+Triggers (default):
+  Alt x2 (Alt Alt)     ->  Proofread & fix grammar (voice preserved)
+  Ctrl x2 (Ctrl Ctrl)  ->  Professional polish
+  Ctrl + Alt + Q       ->  Quit Fixelect
+Presets and custom shortcuts can be chosen in the dashboard.
 
 Author: Bositxon Erkinxonov
 License: MIT (100% Offline, Zero Telemetry)
 """
 
+import atexit
 import ctypes
 import ctypes.wintypes as wintypes
 import pathlib
@@ -20,16 +22,24 @@ import sys
 import threading
 import time
 
+
+class _NullWriter:
+    def write(self, *args, **kwargs):
+        pass
+
+    def flush(self, *args, **kwargs):
+        pass
+
+
 if sys.stdout is None:
-    class _NullWriter:
-        def write(self, *args, **kwargs): pass
-        def flush(self, *args, **kwargs): pass
     sys.stdout = _NullWriter()
 if sys.stderr is None:
-    class _NullWriter:
-        def write(self, *args, **kwargs): pass
-        def flush(self, *args, **kwargs): pass
     sys.stderr = _NullWriter()
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 if sys.platform == "win32":
     try:
@@ -37,8 +47,7 @@ if sys.platform == "win32":
     except Exception:
         pass
     try:
-        # Per-Monitor High DPI V2
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-Monitor High DPI
     except Exception:
         try:
             ctypes.windll.user32.SetProcessDPIAware()
@@ -46,18 +55,15 @@ if sys.platform == "win32":
             pass
     try:
         uxtheme = ctypes.windll.uxtheme
-        SetPreferredAppMode = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int)((135, uxtheme))
-        SetPreferredAppMode(2)  # ForceDark
-        FlushMenuThemes = ctypes.WINFUNCTYPE(None)((136, uxtheme))
-        FlushMenuThemes()
+        ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int)((135, uxtheme))(2)  # SetPreferredAppMode(ForceDark)
+        ctypes.WINFUNCTYPE(None)((136, uxtheme))()                         # FlushMenuThemes
     except Exception:
         pass
 
 if getattr(sys, "frozen", False):
     _base_dir = pathlib.Path(getattr(sys, "_MEIPASS", sys.executable)).resolve()
-    _tools = _base_dir / "tools"
-    if _tools.is_dir():
-        sys.path.insert(0, str(_tools))
+    if (_base_dir / "tools").is_dir():
+        sys.path.insert(0, str(_base_dir / "tools"))
     sys.path.insert(0, str(_base_dir))
     _exe_dir = pathlib.Path(sys.executable).resolve().parent
     if (_exe_dir / "tools").is_dir():
@@ -68,132 +74,132 @@ else:
 from check_guard import BEAMS, MODELS, load_pipeline  # noqa: E402
 from config import (  # noqa: E402
     load_config,
-    save_config,
-    is_auto_start_enabled,
-    set_auto_start,
-    get_resource_path,
+    get_config_dir,
     get_hotkey_label,
     parse_hotkey_string,
+    validate_hotkey,
+    log_error,
 )
-from downloader import resolve_model, download_model  # noqa: E402
+from downloader import resolve_model  # noqa: E402
 from hotkey_win import WinHotkeyListener  # noqa: E402
+import clipboard_win as clip  # noqa: E402
 
-# Default engine configuration
 MODEL = "qwen2.5"
 ENGINE = "embedded"
 FAST = False
 CANDIDATES = 1
 
-# Prefetch watcher timing thresholds
+# Prefetch (opt-in): fix a selection speculatively while the user is still looking at it.
 POLL_SECONDS = 0.35
 SETTLE_SECONDS = 0.4
 MIN_PREFETCH_CHARS = 8
+MAX_PREFETCH_CHARS = 600
+
+MAX_SELECTION_CHARS = 12000     # beyond this a local model would take minutes
+CLIPBOARD_RESTORE_DELAY = 0.8   # give slow apps (Word, Slack, IDEs) time to read the paste
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 
-
-def play_fix_sound(mode="fix"):
-    """Subtle, pleasant Windows audio confirmation when text is corrected or polished."""
-    cfg = load_config()
-    if not cfg.get("sound_enabled", True):
-        return
-    try:
-        import winsound
-        if mode == "polish":
-            winsound.MessageBeep(winsound.MB_ICONASTERISK)
-        else:
-            winsound.MessageBeep(winsound.MB_OK)
-    except Exception:
-        pass
-
-
-def fix_preserving_layout(text, fix_fn, mode="fix"):
-    """Fix grammar and spelling while rigorously preserving line breaks and indentation."""
-    if "\n" not in text:
-        return fix_fn(text)
-
-    # In professional mode, if text has no bullet/numbered list items,
-    # process the whole text in one unified pass to preserve paragraph coherence and maximize speed.
-    if mode == "polish":
-        has_list_items = any(
-            re.match(r"^\s*(?:[-*+]\s+|\d+\.\s+)", line)
-            for line in text.splitlines()
-        )
-        if not has_list_items:
-            return fix_fn(text)
-
-    newline = "\r\n" if "\r\n" in text else "\n"
-    lines = text.split(newline)
-    fixed_lines = []
-    all_applied = []
-    all_expanded = []
-    word_offset = 0
-
-    for line in lines:
-        if not line.strip():
-            fixed_lines.append(line)
-            continue
-
-        m_lead = re.match(r"^(\s*(?:[-*+]\s+|\d+\.\s+)?)(.*?)(\s*)$", line)
-        if m_lead:
-            prefix, content, suffix = m_lead.group(1), m_lead.group(2), m_lead.group(3)
-            if content.strip():
-                fixed_content, applied, expanded = fix_fn(content)
-                fixed_lines.append(prefix + fixed_content + suffix)
-                for s, e, words, votes in applied:
-                    all_applied.append((s + word_offset, e + word_offset, words, votes))
-                word_offset += len(expanded.split())
-                all_expanded.append(expanded)
-            else:
-                fixed_lines.append(line)
-        else:
-            fixed_content, applied, expanded = fix_fn(line)
-            fixed_lines.append(fixed_content)
-            for s, e, words, votes in applied:
-                all_applied.append((s + word_offset, e + word_offset, words, votes))
-            word_offset += len(expanded.split())
-            all_expanded.append(expanded)
-
-    return newline.join(fixed_lines), all_applied, " ".join(all_expanded)
-
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x0008, 0x4000
-VK_CONTROL, VK_MENU, VK_SHIFT = 0x11, 0x12, 0x10
+VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN = 0x11, 0x12, 0x10, 0x5B, 0x5C
 VK_C, VK_V, VK_F, VK_P, VK_Q, VK_SPACE = 0x43, 0x56, 0x46, 0x50, 0x51, 0x20
+VK_MASK = 0xE8  # unassigned key: breaks "lone Win/Alt release" menu activation
 KEYEVENTF_KEYUP = 0x0002
 WM_HOTKEY = 0x0312
+WM_QUIT = 0x0012
+WM_APP_RELOAD_HOTKEYS = 0x8000 + 10
+WM_APP_SUSPEND_HOTKEYS = 0x8000 + 11
 ID_FIX, ID_POLISH, ID_QUIT = 1001, 1002, 1003
 ID_FALLBACK_FIX, ID_FALLBACK_POLISH = 1004, 1005
-WM_APP_RELOAD_HOTKEYS = 0x8000 + 10
+ALL_HOTKEY_IDS = (ID_FIX, ID_POLISH, ID_QUIT, ID_FALLBACK_FIX, ID_FALLBACK_POLISH)
 
 IDC_WAIT = 32514
 IDC_APPSTARTING = 32650
-OCR_NORMAL = 32512
-OCR_IBEAM = 32513
-OCR_HAND = 32649
+OCR_NORMAL, OCR_IBEAM, OCR_HAND = 32512, 32513, 32649
 SPI_SETCURSORS = 0x0057
 IMAGE_CURSOR = 2
 LR_SHARED = 0x8000
 
+user32.LoadImageW.restype = wintypes.HANDLE
+user32.LoadImageW.argtypes = [wintypes.HINSTANCE, ctypes.c_void_p, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+user32.CopyImage.restype = wintypes.HANDLE
+user32.CopyImage.argtypes = [wintypes.HANDLE, wintypes.UINT, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+user32.SetSystemCursor.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.CreateMutexW.restype = wintypes.HANDLE
+kernel32.CreateEventW.restype = wintypes.HANDLE
+kernel32.OpenEventW.restype = wintypes.HANDLE
+kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
 MUTEX_NAME = "Local\\Fixelect_SingleInstance_Mutex"
 SHOW_EVENT_NAME = "Local\\Fixelect_ShowDashboard_Event"
 _single_instance_mutex = None
 
 
-def ensure_single_instance(on_show_callback):
-    """
-    Ensure only one instance of Fixelect runs per Windows user session.
-    If another instance is active, signal it to show its dashboard and exit cleanly.
-    """
-    global _single_instance_mutex
-    if sys.platform != "win32":
-        return None
+# --------------------------------------------------------------------------
+# Sound
+# --------------------------------------------------------------------------
 
-    h_mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    last_err = kernel32.GetLastError()
-    if last_err == 183:  # ERROR_ALREADY_EXISTS
-        h_event = kernel32.OpenEventW(0x0002, False, SHOW_EVENT_NAME)  # EVENT_MODIFY_STATE
+def _sound_file(mode):
+    """Soft two-note chime, generated once. MessageBeep's default "ding" is jarring."""
+    path = get_config_dir() / f"chime_{mode}.wav"
+    if path.is_file():
+        return path
+    import math
+    import struct
+    import wave
+    rate = 44100
+    notes = (1318.5, 1760.0) if mode == "fix" else (987.8, 1318.5)
+    frames = bytearray()
+    for i, freq in enumerate(notes):
+        n = int(rate * 0.07)
+        for s in range(n):
+            t = s / rate
+            env = min(1.0, s / (rate * 0.004)) * math.exp(-t * 38)
+            val = 0.16 * env * math.sin(2 * math.pi * freq * t)
+            frames += struct.pack("<h", int(val * 32767))
+        if i == 0:
+            frames += b"\0\0" * int(rate * 0.012)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        wf.writeframes(bytes(frames))
+    return path
+
+
+def play_fix_sound(mode="fix"):
+    if not load_config().get("sound_enabled", True):
+        return
+    try:
+        import winsound
+        winsound.PlaySound(str(_sound_file(mode)), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+    except Exception:
+        pass
+
+
+# --------------------------------------------------------------------------
+# Text layout
+# --------------------------------------------------------------------------
+
+from check_guard import fix_preserving_layout, split_edges as _split_edges  # noqa: E402
+
+
+# --------------------------------------------------------------------------
+# Single instance
+# --------------------------------------------------------------------------
+
+def ensure_single_instance(on_show_callback):
+    """One Fixelect per user session. A second launch asks the first to show its window."""
+    global _single_instance_mutex
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = wintypes.HANDLE
+    k32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    h_mutex = k32.CreateMutexW(None, False, MUTEX_NAME)
+    if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+        h_event = kernel32.OpenEventW(0x0002, False, SHOW_EVENT_NAME)
         if h_event:
             kernel32.SetEvent(h_event)
             kernel32.CloseHandle(h_event)
@@ -206,87 +212,85 @@ def ensure_single_instance(on_show_callback):
 
     def event_listener():
         while True:
-            ret = kernel32.WaitForSingleObject(h_event, 0xFFFFFFFF)  # INFINITE
-            if ret == 0:  # WAIT_OBJECT_0
-                try:
-                    on_show_callback()
-                except Exception:
-                    pass
+            if kernel32.WaitForSingleObject(h_event, 0xFFFFFFFF) == 0:
+                # Never block this loop: a second launch must always be answered.
+                threading.Thread(target=on_show_callback, daemon=True).start()
 
     threading.Thread(target=event_listener, daemon=True).start()
-    return h_mutex
 
 
 # --------------------------------------------------------------------------
-# The cursor
+# Cursor
 # --------------------------------------------------------------------------
+
+_cursor_busy = False
+
 
 def show_busy_cursor():
-    """Swap system arrow, text selection I-beam, and hand for the spinning wait cursor."""
+    global _cursor_busy
     try:
-        h_wait = user32.LoadImageW(0, IDC_WAIT, IMAGE_CURSOR, 0, 0, LR_SHARED)
-        if not h_wait:
-            h_wait = user32.LoadImageW(0, IDC_APPSTARTING, IMAGE_CURSOR, 0, 0, LR_SHARED)
+        h_wait = user32.LoadImageW(None, IDC_WAIT, IMAGE_CURSOR, 0, 0, LR_SHARED) or \
+            user32.LoadImageW(None, IDC_APPSTARTING, IMAGE_CURSOR, 0, 0, LR_SHARED)
         if h_wait:
             for ocr in (OCR_NORMAL, OCR_IBEAM, OCR_HAND):
-                h_copy = user32.CopyImage(h_wait, IMAGE_CURSOR, 0, 0, 0)
-                user32.SetSystemCursor(h_copy, ocr)
+                user32.SetSystemCursor(user32.CopyImage(h_wait, IMAGE_CURSOR, 0, 0, 0), ocr)
+            _cursor_busy = True
     except Exception:
         pass
 
 
 def restore_cursor():
-    """Reload the standard system cursors from Windows settings."""
+    global _cursor_busy
     try:
         user32.SystemParametersInfoW(SPI_SETCURSORS, 0, None, 0)
     except Exception:
         pass
+    _cursor_busy = False
 
 
-class BusyCursor:
-    """Show the busy loading cursor immediately and restore it on exit."""
-
-    def __enter__(self):
-        show_busy_cursor()
-        return self
-
-    def __exit__(self, *_):
-        restore_cursor()
-        return False
+atexit.register(lambda: _cursor_busy and restore_cursor())
 
 
 # --------------------------------------------------------------------------
-# Keyboard and clipboard
+# Keyboard
 # --------------------------------------------------------------------------
+
+def _scan(vk):
+    # Real scan codes: apps that read them (Tk, Java, games, RDP clients) ignore scan code 0.
+    return user32.MapVirtualKeyW(vk, 0) & 0xFF
+
 
 def key_down(vk):
-    user32.keybd_event(vk, 0, 0, 0)
+    user32.keybd_event(vk, _scan(vk), 0, 0)
 
 
 def key_up(vk):
-    user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+    user32.keybd_event(vk, _scan(vk), KEYEVENTF_KEYUP, 0)
+
+
+def _is_down(vk):
+    return bool(user32.GetAsyncKeyState(vk) & 0x8000)
 
 
 def settle_modifiers():
-    """Wait for the hotkey's own modifiers to be released, then force them up.
+    """Wait for the trigger's modifiers to be released before sending Ctrl+C.
 
-    THE most important function here. When Ctrl+Alt+F fires you are still
-    physically holding Ctrl and Alt. Send Ctrl+C at that moment and Windows
-    sees Ctrl+Alt+C, which is not copy - so nothing is copied and the tool
-    looks like it randomly does nothing.
+    Ctrl+C sent while Alt is still held arrives as Ctrl+Alt+C, which copies
+    nothing. Only keys that are genuinely still down are released - blindly
+    sending a lone Alt/Win key-up activates the app's menu bar or Start menu.
     """
-    deadline = time.time() + 0.4
-    while time.time() < deadline:
-        if not any(
-            user32.GetAsyncKeyState(vk) & 0x8000
-            for vk in (VK_CONTROL, VK_MENU, VK_SHIFT)
-        ):
-            break
+    mods = (VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN)
+    deadline = time.time() + 0.5
+    while time.time() < deadline and any(_is_down(vk) for vk in mods):
         time.sleep(0.01)
-
-    for vk in (VK_MENU, VK_SHIFT, VK_CONTROL):
-        key_up(vk)
-    time.sleep(0.03)
+    stuck = [vk for vk in mods if _is_down(vk)]
+    if stuck:
+        if any(vk in (VK_MENU, VK_LWIN, VK_RWIN) for vk in stuck):
+            key_down(VK_MASK)
+            key_up(VK_MASK)
+        for vk in stuck:
+            key_up(vk)
+        time.sleep(0.03)
 
 
 def send_ctrl(vk):
@@ -296,66 +300,21 @@ def send_ctrl(vk):
     key_up(VK_CONTROL)
 
 
-def safe_copy(text, retries=5, delay=0.03):
-    """Copy text to clipboard with retry loop to handle transient Windows lock contention."""
-    import pyperclip
-    for _ in range(retries):
-        try:
-            pyperclip.copy(text)
-            return True
-        except Exception:
-            time.sleep(delay)
+def copy_selection():
+    """Ctrl+C, then wait until the clipboard actually changes. False = nothing selected."""
+    before = clip.sequence()
+    send_ctrl(VK_C)
+    deadline = time.time() + 0.8
+    while time.time() < deadline:
+        time.sleep(0.012)
+        if clip.sequence() != before:
+            time.sleep(0.025)  # let the source app finish writing every format
+            return not clip.copied_from_empty_selection()
     return False
 
 
-def safe_paste(retries=5, delay=0.03):
-    """Paste text from clipboard with retry loop to handle transient lock contention."""
-    import pyperclip
-    for _ in range(retries):
-        try:
-            return pyperclip.paste()
-        except Exception:
-            time.sleep(delay)
-    return ""
-
-
-def set_clipboard_no_history(text):
-    """
-    Put text on clipboard and flag CanIncludeInClipboardHistory=0.
-    Prevents temporary intermediate Fixelect edits from polluting the user's Win+V history.
-    """
-    try:
-        CF_UNICODETEXT = 13
-        CF_CAN_INCLUDE = user32.RegisterClipboardFormatW("CanIncludeInClipboardHistory")
-        CF_CAN_UPLOAD = user32.RegisterClipboardFormatW("CanUploadToCloudClipboard")
-
-        if not user32.OpenClipboard(None):
-            return safe_copy(text)
-        try:
-            user32.EmptyClipboard()
-            # 0 flag prevents Windows 10/11 Clipboard History and Cloud sync capture
-            if CF_CAN_INCLUDE:
-                user32.SetClipboardData(CF_CAN_INCLUDE, 0)
-            if CF_CAN_UPLOAD:
-                user32.SetClipboardData(CF_CAN_UPLOAD, 0)
-
-            encoded = (text + "\0").encode("utf-16le")
-            h_mem = kernel32.GlobalAlloc(0x0042, len(encoded))  # GMEM_MOVEABLE | GMEM_ZEROINIT
-            if h_mem:
-                p_mem = kernel32.GlobalLock(h_mem)
-                ctypes.memmove(p_mem, encoded, len(encoded))
-                kernel32.GlobalUnlock(h_mem)
-                user32.SetClipboardData(CF_UNICODETEXT, h_mem)
-            return True
-        finally:
-            user32.CloseClipboard()
-    except Exception:
-        return safe_copy(text)
-
-
 def bring_window_to_front(hwnd):
-    """Force a Win32 window to the foreground on Windows 10/11 bypassing foreground lock."""
-    if sys.platform != "win32" or not hwnd:
+    if not hwnd:
         return
     try:
         user32.ShowWindow(hwnd, 9)  # SW_RESTORE
@@ -365,35 +324,13 @@ def bring_window_to_front(hwnd):
         pass
 
 
-def copy_selection():
-    """Ctrl+C, then wait until the clipboard actually changes."""
-    before = user32.GetClipboardSequenceNumber()
-    send_ctrl(VK_C)
-
-    deadline = time.time() + 0.7
-    while time.time() < deadline:
-        time.sleep(0.015)
-        if user32.GetClipboardSequenceNumber() != before:
-            time.sleep(0.02)  # let the source app finish writing
-            return True
-    return False
-
-
 # --------------------------------------------------------------------------
-# Reading the selection without touching the clipboard
+# Reading the selection without touching the clipboard (prefetch)
 # --------------------------------------------------------------------------
 
 class SelectionReader:
-    """Reads the focused control's selected text through UI Automation.
-
-    This is what makes the prefetch possible: it sees your selection *without*
-    sending Ctrl+C, so it can start work before you ask for it.
-
-    Coverage is not universal. Chrome, Edge, Word, Notepad and most native
-    controls implement the text pattern properly. Many Electron and Qt apps do
-    not. Every failure here is silent and harmless - `text()` returns None, no
-    prefetch happens, and the hotkey still works exactly as it always did.
-    """
+    """Reads the focused control's selected text through UI Automation. Every
+    failure is silent: text() returns None and the hotkey path is unaffected."""
 
     def __init__(self):
         self.ok = False
@@ -403,9 +340,7 @@ class SelectionReader:
 
             comtypes.CoInitialize()
             module = comtypes.client.GetModule("UIAutomationCore.dll")
-            self.uia = comtypes.client.CreateObject(
-                module.CUIAutomation, interface=module.IUIAutomation
-            )
+            self.uia = comtypes.client.CreateObject(module.CUIAutomation, interface=module.IUIAutomation)
             self.text_pattern_id = module.UIA_TextPatternId
             self.IUIAutomationTextPattern = module.IUIAutomationTextPattern
             self.ok = True
@@ -425,564 +360,470 @@ class SelectionReader:
             ranges = pattern.QueryInterface(self.IUIAutomationTextPattern).GetSelection()
             if not ranges or ranges.Length == 0:
                 return None
-            selected = ranges.GetElement(0).GetText(-1)
+            selected = ranges.GetElement(0).GetText(MAX_PREFETCH_CHARS + 1)
             return selected.strip() or None
         except Exception:
-            # Focus moved mid-call, app doesn't support it, COM hiccup - all
-            # of these are ordinary and none of them should be visible.
             return None
 
 
-def watcher(jobs, cache, reader_ready):
-    """Watch the selection and queue speculative work on whatever settles.
-
-    Prefetching is only ever an optimisation. If it is wrong, or slow, or the
-    app is unsupported, nothing breaks - the hotkey path computes from scratch.
-    """
-    reader = SelectionReader()
-    reader_ready.set()
-    if not reader.ok:
-        return
-
-    last_seen, seen_at, submitted = None, 0.0, None
-
-    while True:
-        time.sleep(POLL_SECONDS)
-        current = reader.text()
-
-        if current != last_seen:
-            last_seen, seen_at = current, time.time()
-            continue
-
-        if (
-            current
-            and len(current) >= MIN_PREFETCH_CHARS
-            and current != submitted
-            and current not in cache
-            and time.time() - seen_at >= SETTLE_SECONDS
-        ):
-            submitted = current
-            jobs.put(("prefetch", current))
-
-
 # --------------------------------------------------------------------------
-# The worker
+# The application
 # --------------------------------------------------------------------------
 
-def worker(jobs, cache, fix_holder=None):
-    """Owns the model. One job at a time, so nothing races the tensors.
+class FixelectApp:
+    """Owns the model, the hotkeys and the clipboard dance. One worker thread
+    runs every job in order, so nothing races the engine or the clipboard."""
 
-    The hotkey thread must keep draining its Windows message queue; if it
-    stopped to run the model, further hotkeys would be dropped.
-    """
-    import pyperclip
+    def __init__(self):
+        self.jobs = queue.Queue()
+        self.cache = {}
+        self.fix = None
+        self.status_info = {"state": "loading", "detail": "Starting the AI engine…", "backend": "", "model": ""}
+        self.hotkey_errors = []
+        self.main_thread_id = kernel32.GetCurrentThreadId()
+        self.prefetch_on = threading.Event()
+        self._restore_lock = threading.Lock()
+        self._restore_timer = None
+        self._pending_restore = None
+        self._last_hotkey_done = 0.0
+        self.tray = None
+        self.ui = None
+        self.listener = None
 
-    print(f"loading engine [{ENGINE}] for {MODEL} ...")
-    fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
-    if fix_holder is not None:
-        fix_holder[0] = fix
-    print("ready. select some text and press ctrl+alt+f\n")
+    # -- status & notifications ----------------------------------------------
 
-    while True:
-        kind, payload = jobs.get()
-
-        if kind == "prefetch":
-            # Speculative: the answer may never be asked for. Silent either way.
-            if payload not in cache:
-                try:
-                    cache[payload] = fix(payload)
-                    trim(cache)
-                except Exception:
-                    pass
-            continue
-
-        # kind in ("fix", "polish") - the user pressed a hotkey.
-        show_busy_cursor()
-        mode = kind
+    def set_status(self, state, detail=""):
+        self.status_info.update(state=state, detail=detail)
         try:
-            # Throw away every prefetch still waiting in the queue.
-            pending = []
-            while not jobs.empty():
-                job = jobs.get_nowait()
-                if job[0] != "prefetch":
-                    pending.append(job)
-            for job in pending:
-                jobs.put(job)
+            from engine import get_default_engine
+            eng = get_default_engine()
+            self.status_info["backend"] = eng.backend_label or ""
+            self.status_info["model"] = eng.model_profile
+        except Exception:
+            pass
+        if self.tray:
+            self.tray.refresh()
 
-            saved = None
-            try:
-                saved = safe_paste()
-            except Exception:
-                pass
+    def status(self):
+        return dict(self.status_info)
 
-            settle_modifiers()
+    def notify(self, title, message):
+        if self.tray:
+            self.tray.notify(title, message)
 
-            if not copy_selection():
-                print("  ! nothing selected")
-                continue
+    # -- engine -----------------------------------------------------------------
 
-            text = safe_paste()
-            if not text or not text.strip():
-                print("  ! selection was empty")
-                continue
+    def _load_engine(self):
+        self.set_status("loading", "Loading the AI model…")
+        try:
+            self.fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
+            self.set_status("ready", "Ready")
+            return True
+        except Exception as e:
+            self.fix = None
+            log_error(f"engine load failed: {e}")
+            self.set_status("error", str(e))
+            return False
 
-            started = time.time()
-            ready = cache.get(text.strip()) if mode == "fix" else None
-            if ready is not None:
-                fixed, applied, expanded = ready
-                note = " (prepared)"
-            else:
-                fixed, applied, expanded = fix_preserving_layout(text, lambda t: fix(t, mode=mode), mode=mode)
-                note = ""
-            took = (time.time() - started) * 1000
+    def _switch_model(self, profile):
+        from engine import get_default_engine
+        self.set_status("loading", "Switching model…")
+        self.cache.clear()
+        try:
+            get_default_engine(model_profile=profile)
+        except Exception:
+            pass
+        self._load_engine()
+        if self.status_info["state"] == "ready":
+            from downloader import MODELS as DL_MODELS
+            self.notify("Model ready", f"Fixelect now uses {DL_MODELS.get(profile, {}).get('short_name', profile)}.")
 
-            if fixed.strip() == text.strip():
-                print(f"  = left alone ({took:.0f}ms){note}")
-                print(f"    why: python fixelect.py --raw {text[:50]!r}")
-            else:
-                set_clipboard_no_history(fixed)
-                time.sleep(0.04)
-                send_ctrl(VK_V)
-                time.sleep(0.12)
-                play_fix_sound(mode)
-                label = "POLISHED" if mode == "polish" else "FIXED"
-                print(f"  ~ [{label}] in {took:.0f}ms{note}")
-                print(f"    before: {text[:70]}")
-                print(f"    after:  {fixed[:70]}")
-                if mode == "fix":
-                    for start, end, words, votes in applied:
-                        was = " ".join(expanded.split()[start:end])
-                        print(f"      + {was!r} -> {' '.join(words)!r} ({votes}/{CANDIDATES})")
-        finally:
-            restore_cursor()
+    # -- clipboard restore ---------------------------------------------------------
 
-        if saved is not None:
-            def restore_cb(s=saved):
-                time.sleep(0.85)  # Extended timeout for heavy desktop apps (Word, Slack, IDEs)
-                safe_copy(s)
-            threading.Thread(target=restore_cb, daemon=True).start()
+    def _take_pending_restore(self):
+        """If the previous job's restore hasn't happened yet, cancel it and hand
+        back the user's original clipboard, so we never capture our own output."""
+        with self._restore_lock:
+            if self._restore_timer is not None:
+                self._restore_timer.cancel()
+                self._restore_timer = None
+                snap, self._pending_restore = self._pending_restore, None
+                return snap, True
+            return None, False
 
-
-def trim(cache, keep=20):
-    """Keep the cache small. Selections are transient; old ones never return."""
-    while len(cache) > keep:
-        cache.pop(next(iter(cache)))
-
-
-# --------------------------------------------------------------------------
-
-def main():
-    global SOUND_ENABLED, MODEL, CANDIDATES
-
-    # Parse --model <name>
-    for i, a in enumerate(sys.argv):
-        if a == "--model" and i + 1 < len(sys.argv):
-            MODEL = sys.argv[i + 1]
-            CANDIDATES = 2 if MODELS.get(MODEL, {}).get("kind") == "ollama" else BEAMS
-            del sys.argv[i:i + 2]
-            break
-
-    global SOUND_ENABLED, ENGINE
-    if "--no-sound" in sys.argv:
-        SOUND_ENABLED = False
-        sys.argv.remove("--no-sound")
-
-    if "--ollama" in sys.argv:
-        ENGINE = "ollama"
-        sys.argv.remove("--ollama")
-    elif "--embedded" in sys.argv:
-        ENGINE = "embedded"
-        sys.argv.remove("--embedded")
-
-    if "--help" in sys.argv or "-h" in sys.argv:
-        print("""Fixelect - AI Offline Grammar & Executive Polish for Windows
-
-Usage:
-  python fixelect.py                    Start Fixelect in Windows System Tray (default)
-  python fixelect.py --dashboard        Open Settings, Mode Guide & Live Playground
-  python fixelect.py --setup            Open Model Setup & Hardware Downloader
-  python fixelect.py "some text"        Fix text directly in console (Default Mode)
-  python fixelect.py -p "some text"     Polish text directly (Professional Mode)
-  python fixelect.py --test             Run complete self-test validation suite
-  python fixelect.py --benchmark        Run speed benchmarks across sentences
-
-Global Hotkeys (any app in Windows):
-  Ctrl + Alt + F   Default Fix Mode (proofreading, typos, keeps tone & slang)
-  Ctrl + Alt + P   Professional Polish Mode (executive tone, active voice)
-  Ctrl + Alt + Q   Quit Fixelect cleanly
-""")
-        return
-
-    for a in list(sys.argv):
-        if a.startswith("--engine="):
-            ENGINE = a.split("=", 1)[1]
-            sys.argv.remove(a)
-            break
-
-    if "--download" in sys.argv:
-        from downloader import download_model
-        download_model(profile="3b")
-        return
-
-    if "--setup" in sys.argv:
-        from ui import SetupWindow
-        SetupWindow().show()
-        return
-
-    if "--dashboard" in sys.argv or "--settings" in sys.argv:
-        from ui import DashboardWindow
-        fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
-        DashboardWindow(
-            fix_fn=lambda t, mode="fix": fix_preserving_layout(t, lambda x: fix(x, mode=mode), mode=mode)
-        ).show()
-        return
-
-    polish_mode = False
-    for p_flag in ("--polish", "-p"):
-        if p_flag in sys.argv:
-            polish_mode = True
-            sys.argv.remove(p_flag)
-            break
-
-    if "--background" in sys.argv or "--hide" in sys.argv:
-        hwnd = kernel32.GetConsoleWindow()
-        if hwnd:
-            user32.ShowWindow(hwnd, 0)
-        sys.argv = [a for a in sys.argv if a not in ("--background", "--hide")]
-
-    if "--benchmark" in sys.argv:
-        print(f"Benchmarking Fixelect engine '{ENGINE}' with model '{MODEL}'...")
-        fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
-        test_sentences = [
-            "helo how are you im fne wht abt you",
-            "to behonst its kinda really strannge an i don know what s hapenning",
-            "tobehonest its kinda really difficult to change someint in that isutation and you can do that too",
-            "The MT300 SWIFT message failed validation in the PLSQL package.",
-        ]
-        for s in test_sentences:
-            t0 = time.time()
-            out, applied, _ = fix_preserving_layout(s, lambda t: fix(t, mode="fix"))
-            ms = (time.time() - t0) * 1000
-            print(f"\nIn:    {s}\nOut:   {out}\nSpeed: {ms:.1f}ms")
-        return
-
-    if "--test" in sys.argv:
-        print(f"Running Fixelect self-tests with engine [{ENGINE.upper()}] (Default Mode + Professional Polish Mode)...")
-        fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
-        from check_guard import normalise
-        fix_cases = [
-            ("your welcome", "you're welcome"),
-            ("i cant seem too focus on the the task", "I can't seem to focus on the task"),
-            ("better then that", "better than that"),
-            ("helo how are you", "hello how are you"),
-            ("tobehonest its kinda really difficult to change someint in that isutation and you can do that too",
-             "to be honest it's kind of really difficult to change something in that situation and you can do that too"),
-            ("This sentence is perfectly fine already.", "This sentence is perfectly fine already."),
-            ("- helo world\n- im fne", "- hello world\n- I'm fine"),
-        ]
-        all_passed = True
-        print("\n--- [1/2] Default Fix Mode Tests (Ctrl+Alt+F) ---")
-        for inp, exp in fix_cases:
-            out, _, _ = fix_preserving_layout(inp, lambda t: fix(t, mode="fix"))
-            ok = normalise(out) == normalise(exp)
-            if not ok:
-                all_passed = False
-            status = "PASS" if ok else "FAIL"
-            print(f"[{status}] In: '{inp.replace(chr(10), ' | ')}' -> Out: '{out.replace(chr(10), ' | ')}'")
-
-        print("\n--- [2/2] Professional Polish Mode Tests (Ctrl+Alt+P) ---")
-        pro_cases = [
-            ("tobehonest i think we need to change someint in that isutation cause it looks bad",
-             ["situation", "honest"]),
-            ("The MT300 SWIFT message failed validation in the PLSQL package.",
-             ["MT300", "SWIFT", "PLSQL"]),
-            ("im rly sorry for the delay i was stuck in traffic and my phone died so i couldnt email you earlier",
-             ["delay", "traffic"]),
-        ]
-        for inp, required_tokens in pro_cases:
-            out, _, _ = fix_preserving_layout(inp, lambda t: fix(t, mode="polish"), mode="polish")
-            ok = all(tok.lower() in out.lower() for tok in required_tokens)
-            if not ok:
-                all_passed = False
-            status = "PASS" if ok else "FAIL"
-            print(f"[{status}] In:  '{inp}'\n       Out: '{out}'")
-
-        print(f"\nSelf-tests {'PASSED ALL CHECKS' if all_passed else 'HAD FAILURES'}.")
-        return
-
-    # Parse runtime flags
-    is_silent = "--silent" in sys.argv
-    is_autostart = "--autostart" in sys.argv
-    is_no_tray = "--no-tray" in sys.argv
-    is_no_dashboard = "--no-dashboard" in sys.argv
-    for flag in ("--silent", "--autostart", "--no-tray", "--no-dashboard"):
-        while flag in sys.argv:
-            sys.argv.remove(flag)
-
-    # One-shot mode for testing: python fixelect.py "some text to fix"
-    args = sys.argv[1:]
-    raw = args and args[0] == "--raw"
-    if raw:
-        args = args[1:]
-
-    if args:
-        text = " ".join(args)
-
-        # --raw shows what the model actually said, before the guard touches
-        # it. When a fix doesn't happen there are only two possible culprits -
-        # the model never proposed it, or the guard threw it away - and they
-        # need opposite repairs. This is the one command that tells them apart.
-        if raw:
-            from check_guard import (
-                consensus, expand, ollama_rewrites, MODELS as SPECS,
-            )
-
-            expanded = expand(text)
-            print(f"\n  you typed : {text}")
-            if expanded != text:
-                print(f"  expanded  : {expanded}")
-
-            started = time.time()
-            rewrites = ollama_rewrites(SPECS[MODEL]["repo"], expanded, CANDIDATES, mode="fix")
-            took = (time.time() - started) * 1000
-
-            print("\n  what the model said:")
-            for i, r in enumerate(rewrites):
-                print(f"    [{i}] {r}")
-
-            final, applied, outvoted = consensus(expanded, rewrites)
-            print("\n  what the guard kept:")
-            for start, end, words, votes in applied:
-                was = " ".join(expanded.split()[start:end])
-                print(f"    + {was!r} -> {' '.join(words)!r} ({votes}/{CANDIDATES})")
-            if not applied:
-                print("    (nothing)")
-
-            if outvoted:
-                print("\n  what the guard threw away:")
-                for (start, end, words), votes in sorted(outvoted):
-                    was = " ".join(expanded.split()[start:end])
-                    print(f"    - {was!r} -> {' '.join(words)!r} "
-                          f"(only {votes}/{CANDIDATES} agreed)")
-
-            print(f"\n  result: {final}")
-            print(f"  {took:.0f}ms for {CANDIDATES} candidates")
+    def _schedule_restore(self, snapshot, delay, only_if_seq=None):
+        if snapshot is None:
             return
 
-        print(f"loading engine [{ENGINE}] for {MODEL} ...")
-        fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
-
-        mode = "polish" if polish_mode else "fix"
-        started = time.time()
-        fixed, applied, expanded = fix_preserving_layout(text, lambda t: fix(t, mode=mode), mode=mode)
-
-        label = "POLISH (Ctrl+Alt+P)" if mode == "polish" else "FIX (Ctrl+Alt+F)"
-        print(f"\n  mode: {label}")
-        print(f"  in  : {text}")
-        print(f"  out : {fixed}")
-        if mode == "fix":
-            for start, end, words, votes in applied:
-                was = " ".join(expanded.split()[start:end])
-                print(f"        + {was!r} -> {' '.join(words)!r} ({votes}/{CANDIDATES})")
-        print(f"  {(time.time() - started) * 1000:.0f}ms")
-        return
-
-    main_thread_id = kernel32.GetCurrentThreadId()
-
-    _dashboard_lock = threading.Lock()
-    _active_dashboard = [None]
-    jobs = queue.Queue()
-    cache = {}
-    reader_ready = threading.Event()
-    fix_holder = [None]
-    hotkey_holder = [None]
-
-    def open_dashboard():
-        with _dashboard_lock:
-            active = _active_dashboard[0]
-            if active is not None and getattr(active, "root", None):
-                try:
-                    active.root.deiconify()
-                    bring_window_to_front(active.root.winfo_id())
-                    active.root.lift()
-                    active.root.focus_force()
+        def do_restore():
+            with self._restore_lock:
+                if self._restore_timer is None:
                     return
-                except Exception:
-                    _active_dashboard[0] = None
+                self._restore_timer = None
+                self._pending_restore = None
+                # If the user copied something new meanwhile, leave it alone.
+                if only_if_seq is not None and clip.sequence() != only_if_seq:
+                    return
+                clip.restore(snapshot)
 
-            def run_fix(t, mode="fix"):
-                # Wait for engine to finish loading if recently started
-                deadline = time.time() + 20.0
-                while fix_holder[0] is None and time.time() < deadline:
-                    time.sleep(0.15)
+        with self._restore_lock:
+            if self._restore_timer is not None:
+                self._restore_timer.cancel()
+            self._pending_restore = snapshot
+            self._restore_timer = threading.Timer(delay, do_restore)
+            self._restore_timer.daemon = True
+            self._restore_timer.start()
 
-                if fix_holder[0] is None:
-                    # Initialize on demand if worker hasn't finished
-                    fix_holder[0] = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
+    # -- jobs ----------------------------------------------------------------------
 
-                fn = fix_holder[0]
-                return fix_preserving_layout(t, lambda x: fn(x, mode=mode), mode=mode)
-
-            from ui import DashboardWindow
-            dash = DashboardWindow(
-                fix_fn=run_fix,
-                on_quit=quit_app,
-                hotkey_listener=hotkey_holder[0],
-                on_reload_hotkeys=reload_system_hotkeys,
-            )
-            _active_dashboard[0] = dash
-
-        try:
-            dash.show()
-        finally:
-            with _dashboard_lock:
-                if _active_dashboard[0] is dash:
-                    _active_dashboard[0] = None
-
-    def quit_app():
-        user32.PostThreadMessageW(main_thread_id, 0x0012, 0, 0)
-
-    def reload_system_hotkeys():
-        user32.PostThreadMessageW(main_thread_id, WM_APP_RELOAD_HOTKEYS, 0, 0)
-
-    # 0. Single-Instance Check (Win32 Named Mutex)
-    ensure_single_instance(open_dashboard)
-
-    # 1. Onboarding check: If model is not yet available, launch Setup & Downloader
-    if ENGINE == "embedded":
-        cfg = load_config()
-        profile = cfg.get("model_profile", "3b")
-        if not resolve_model(profile):
-            print("  [Fixelect] Model not found. Launching initial setup window...")
-            from ui import SetupWindow
-            SetupWindow().show()
-            cfg = load_config()
-            profile = cfg.get("model_profile", "3b")
-            if not resolve_model(profile):
-                print("  [Fixelect] Setup cancelled or model not downloaded. Exiting.")
-                return
-
-    threading.Thread(target=worker, args=(jobs, cache, fix_holder), daemon=True).start()
-    threading.Thread(
-        target=watcher, args=(jobs, cache, reader_ready), daemon=True
-    ).start()
-    reader_ready.wait(timeout=10)
-
-    # Unified Windows Hotkey Dispatcher (supports Double-Tap Alt/Ctrl, Space combos, and custom keys)
-    def handle_fix_trigger():
+    def trigger(self, mode):
         show_busy_cursor()
-        jobs.put(("fix", None))
+        self.jobs.put((mode, None, time.time()))
 
-    def handle_polish_trigger():
-        show_busy_cursor()
-        jobs.put(("polish", None))
+    def run_fix_sync(self, text, mode="fix", timeout=240):
+        """Used by the dashboard playground: runs on the worker, returns fixed text."""
+        reply = queue.Queue()
+        self.jobs.put(("playground", (text, mode, reply), time.time()))
+        ok, value = reply.get(timeout=timeout)
+        if not ok:
+            raise RuntimeError(value)
+        return value
 
-    hotkey_listener = WinHotkeyListener(
-        on_fix=handle_fix_trigger,
-        on_polish=handle_polish_trigger,
-        on_quit=quit_app,
-        config=load_config(),
-    )
-    hotkey_holder[0] = hotkey_listener
-    hotkey_listener.start()
+    def request_model_switch(self, profile):
+        self.jobs.put(("switch_model", profile, time.time()))
 
-    # Dynamic Windows OS System Hotkeys (handles Alt+Space, Classic, and Custom keys)
-    def apply_system_hotkeys():
-        cfg = load_config()
-        for hid in (ID_FIX, ID_POLISH, ID_QUIT, ID_FALLBACK_FIX, ID_FALLBACK_POLISH):
+    def worker(self):
+        self._load_engine()
+        while True:
+            kind, payload, queued_at = self.jobs.get()
             try:
-                user32.UnregisterHotKey(None, hid)
-            except Exception:
-                pass
+                if kind == "prefetch":
+                    self._do_prefetch(payload)
+                elif kind == "switch_model":
+                    self._switch_model(payload)
+                elif kind == "playground":
+                    self._do_playground(*payload)
+                elif kind in ("fix", "polish"):
+                    if queued_at < self._last_hotkey_done:
+                        continue  # pressed again while the previous one was running
+                    try:
+                        self._do_hotkey(kind)
+                    finally:
+                        restore_cursor()
+                        self._last_hotkey_done = time.time()
+            except Exception as e:
+                log_error(f"job {kind} failed: {type(e).__name__}: {e}")
+                if kind in ("fix", "polish"):
+                    self.notify("Fixelect couldn't finish", str(e) or type(e).__name__)
 
-        # Always register emergency quit: Ctrl+Alt+Q
-        user32.RegisterHotKey(None, ID_QUIT, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_Q)
+    def _ensure_fix(self):
+        if self.fix is None and not self._load_engine():
+            raise RuntimeError(self.status_info.get("detail") or "The AI engine is not available.")
+        return self.fix
 
-        t_mode = cfg.get("trigger_mode", "double_tap")
-        if t_mode == "alt_space":
-            user32.RegisterHotKey(None, ID_FIX, MOD_ALT | MOD_NOREPEAT, VK_SPACE)
-            user32.RegisterHotKey(None, ID_POLISH, MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, VK_SPACE)
-            user32.RegisterHotKey(None, ID_FALLBACK_FIX, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F)
-            user32.RegisterHotKey(None, ID_FALLBACK_POLISH, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_P)
-        elif t_mode == "classic":
-            user32.RegisterHotKey(None, ID_FIX, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F)
-            user32.RegisterHotKey(None, ID_POLISH, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_P)
-        elif t_mode == "custom":
-            raw_fix = cfg.get("custom_fix", "Ctrl+Alt+F")
-            raw_pol = cfg.get("custom_polish", "Ctrl+Alt+P")
-            m1, v1 = parse_hotkey_string(raw_fix)
-            m2, v2 = parse_hotkey_string(raw_pol)
-            if v1:
-                user32.RegisterHotKey(None, ID_FIX, m1, v1)
-            if v2:
-                user32.RegisterHotKey(None, ID_POLISH, m2, v2)
-            user32.RegisterHotKey(None, ID_FALLBACK_FIX, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F)
-            user32.RegisterHotKey(None, ID_FALLBACK_POLISH, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_P)
-        elif t_mode == "double_tap":
-            user32.RegisterHotKey(None, ID_FALLBACK_FIX, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_F)
-            user32.RegisterHotKey(None, ID_FALLBACK_POLISH, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_P)
+    def _run(self, text, mode):
+        fix = self._ensure_fix()
+        self.set_status("busy", "Working…")
+        try:
+            return fix_preserving_layout(text, lambda t: fix(t, mode=mode), mode=mode)
+        finally:
+            self.set_status("ready", "Ready")
 
-    apply_system_hotkeys()
+    def _do_playground(self, text, mode, reply):
+        try:
+            reply.put((True, self._run(text, mode)[0]))
+        except Exception as e:
+            reply.put((False, str(e)))
 
-    tray = None
-    if not is_no_tray:
+    def _do_prefetch(self, text):
+        if self.fix is None or text in self.cache or not self.prefetch_on.is_set():
+            return
+        try:
+            self.cache[text] = fix_preserving_layout(text, lambda t: self.fix(t, mode="fix"))[0]
+            while len(self.cache) > 20:
+                self.cache.pop(next(iter(self.cache)))
+        except Exception:
+            pass
+
+    def _drop_queued_prefetch(self):
+        kept = []
+        while True:
+            try:
+                job = self.jobs.get_nowait()
+            except queue.Empty:
+                break
+            if job[0] != "prefetch":
+                kept.append(job)
+        for job in kept:
+            self.jobs.put(job)
+
+    def _do_hotkey(self, mode):
+        show_busy_cursor()
+        self._drop_queued_prefetch()
+
+        original, _ = self._take_pending_restore()
+        if original is None:
+            original = clip.snapshot()
+
+        settle_modifiers()
+        if not copy_selection():
+            print("  ! nothing selected")
+            self._schedule_restore(original, 0.05)
+            return
+
+        text = clip.get_text()
+        if not text or not text.strip():
+            self._schedule_restore(original, 0.05)
+            return
+        if len(text) > MAX_SELECTION_CHARS:
+            self._schedule_restore(original, 0.05)
+            self.notify("Selection too long", f"Select fewer than {MAX_SELECTION_CHARS:,} characters at a time.")
+            return
+
+        started = time.time()
+        lead, core, trail = _split_edges(text)
+        cached = self.cache.get(core) if (mode == "fix" and "\n" not in core) else None
+        if cached is not None:
+            fixed, note = lead + cached + trail, " (prepared)"
+        else:
+            fixed, note = self._run(text, mode)[0], ""
+        took = (time.time() - started) * 1000
+
+        if fixed == text:
+            print(f"  = left alone ({took:.0f}ms){note}")
+            self._schedule_restore(original, 0.05)
+            return
+
+        clip.set_text(fixed, private=True)
+        seq_after_set = clip.sequence()
+        time.sleep(0.03)
+        send_ctrl(VK_V)
+        play_fix_sound(mode)
+        print(f"  ~ [{'POLISHED' if mode == 'polish' else 'FIXED'}] in {took:.0f}ms{note}")
+        self._schedule_restore(original, CLIPBOARD_RESTORE_DELAY, only_if_seq=seq_after_set)
+
+    # -- prefetch watcher ---------------------------------------------------------
+
+    def watcher(self):
+        reader = None
+        last_seen, seen_at, submitted = None, 0.0, None
+        while True:
+            if not self.prefetch_on.is_set():
+                self.prefetch_on.wait()
+                last_seen, submitted = None, None
+            if reader is None:
+                reader = SelectionReader()
+                if not reader.ok:
+                    return
+            time.sleep(POLL_SECONDS)
+            current = reader.text()
+            if current != last_seen:
+                last_seen, seen_at = current, time.time()
+                continue
+            if (current and MIN_PREFETCH_CHARS <= len(current) <= MAX_PREFETCH_CHARS
+                    and "\n" not in current and "\r" not in current
+                    and current != submitted and current not in self.cache
+                    and time.time() - seen_at >= SETTLE_SECONDS):
+                submitted = current
+                self.jobs.put(("prefetch", current, time.time()))
+
+    # -- hotkeys (main thread only: RegisterHotKey binds to the calling thread) -----
+
+    def apply_system_hotkeys(self, suspended=False):
+        for hid in ALL_HOTKEY_IDS:
+            user32.UnregisterHotKey(None, hid)
+        errors = []
+        if suspended:
+            self.hotkey_errors = errors
+            return
+
+        def reg(hid, mods, vk, label, report=True):
+            if not vk:
+                return
+            if not user32.RegisterHotKey(None, hid, mods | MOD_NOREPEAT, vk) and report:
+                errors.append(f"{label} is already used by another app.")
+
+        cfg = load_config()
+        reg(ID_QUIT, MOD_CONTROL | MOD_ALT, VK_Q, "Ctrl+Alt+Q", report=False)
+        mode = cfg.get("trigger_mode", "double_tap")
+        fallbacks = True
+        if mode == "alt_space":
+            reg(ID_FIX, MOD_ALT, VK_SPACE, "Alt+Space")
+            reg(ID_POLISH, MOD_ALT | MOD_SHIFT, VK_SPACE, "Alt+Shift+Space")
+        elif mode == "classic":
+            reg(ID_FIX, MOD_CONTROL | MOD_ALT, VK_F, "Ctrl+Alt+F")
+            reg(ID_POLISH, MOD_CONTROL | MOD_ALT, VK_P, "Ctrl+Alt+P")
+            fallbacks = False
+        elif mode == "custom":
+            for hid, key in ((ID_FIX, "custom_fix"), (ID_POLISH, "custom_polish")):
+                combo = cfg.get(key, "")
+                ok, msg = validate_hotkey(combo)
+                if not ok:
+                    errors.append(f"{combo or 'Shortcut'}: {msg}")
+                    continue
+                m, v = parse_hotkey_string(combo)
+                reg(hid, m & ~MOD_NOREPEAT, v, combo)
+        # Ctrl+Alt+F / Ctrl+Alt+P always work as a backup (silently skipped if taken).
+        if fallbacks:
+            reg(ID_FALLBACK_FIX, MOD_CONTROL | MOD_ALT, VK_F, "Ctrl+Alt+F", report=False)
+            reg(ID_FALLBACK_POLISH, MOD_CONTROL | MOD_ALT, VK_P, "Ctrl+Alt+P", report=False)
+        if mode == "double_tap" and self.listener is not None and not self.listener.active:
+            errors.append("Double-tap detection is unavailable (keyboard hook failed).")
+        self.hotkey_errors = errors
+
+    def post_reload(self):
+        user32.PostThreadMessageW(self.main_thread_id, WM_APP_RELOAD_HOTKEYS, 0, 0)
+
+    def post_suspend(self, flag):
+        user32.PostThreadMessageW(self.main_thread_id, WM_APP_SUSPEND_HOTKEYS, 1 if flag else 0, 0)
+
+    def quit(self):
+        user32.PostThreadMessageW(self.main_thread_id, WM_QUIT, 0, 0)
+
+    def _reload_everything(self):
+        cfg = load_config()
+        if self.listener is not None:
+            self.listener.reload(cfg)
+        self.apply_system_hotkeys()
+        if cfg.get("prefetch_enabled"):
+            self.prefetch_on.set()
+        else:
+            self.prefetch_on.clear()
+            self.cache.clear()
+        if self.tray:
+            self.tray.refresh()
+
+    # -- UI glue ---------------------------------------------------------------------
+
+    def services(self):
+        app = self
+
+        class Services:
+            platform = "win"
+
+            def fix(self, text, mode="fix"):
+                return app.run_fix_sync(text, mode)
+
+            def status(self):
+                return app.status()
+
+            def quit(self):
+                app.quit()
+
+            def hotkeys_changed(self):
+                app.post_reload()
+
+            def hotkey_errors(self):
+                return list(app.hotkey_errors)
+
+            def suspend_hotkeys(self, flag):
+                if app.listener is not None:
+                    app.listener.suspend(flag)
+                app.post_suspend(flag)
+
+            def model_changed(self, profile):
+                app.request_model_switch(profile)
+
+            def prefs_changed(self):
+                app.post_reload()
+
+        return Services()
+
+    def open_dashboard(self):
+        if self.ui is None:
+            from ui import UIManager
+            self.ui = UIManager(self.services())
+        self.ui.open_dashboard()
+
+    # -- main ---------------------------------------------------------------------------
+
+    def run(self, show_dashboard, show_startup_toast):
+        ensure_single_instance(self.open_dashboard)
+
+        if ENGINE == "embedded":
+            profile = load_config().get("model_profile", "3b")
+            if not resolve_model(profile):
+                from ui import UIManager
+                self.ui = UIManager(self.services())
+                if not self.ui.run_setup_blocking():
+                    print("  [Fixelect] Setup cancelled - exiting.")
+                    return
+                show_dashboard = False  # setup just finished; don't stack another window
+
+        cfg = load_config()
+        if cfg.get("prefetch_enabled"):
+            self.prefetch_on.set()
+
+        threading.Thread(target=self.worker, daemon=True, name="fixelect-worker").start()
+        threading.Thread(target=self.watcher, daemon=True, name="fixelect-prefetch").start()
+
+        self.listener = WinHotkeyListener(
+            on_fix=lambda: self.trigger("fix"),
+            on_polish=lambda: self.trigger("polish"),
+            config=cfg,
+        )
+        self.listener.start()
+        self.apply_system_hotkeys()
+
         try:
             from tray import TrayManager
-            tray = TrayManager(on_open_settings=open_dashboard, on_quit=quit_app)
-            tray.start()
-            if is_autostart or is_silent:
-                def notify_startup():
-                    time.sleep(1.2)
-                    fl = get_hotkey_label("fix")
-                    pl = get_hotkey_label("polish")
-                    tray.notify(
-                        "Fixelect Active",
-                        f"Running in system tray. Fix: {fl}  •  Polish: {pl}"
-                    )
-                threading.Thread(target=notify_startup, daemon=True).start()
+            self.tray = TrayManager(
+                on_open_settings=self.open_dashboard,
+                on_quit=self.quit,
+                on_switch_model=self.request_model_switch,
+                get_status=self.status,
+            )
+            self.tray.start()
+            if show_startup_toast:
+                def toast():
+                    time.sleep(1.5)
+                    self.notify("Fixelect is running",
+                                f"Fix: {get_hotkey_label('fix')}   •   Polish: {get_hotkey_label('polish')}")
+                threading.Thread(target=toast, daemon=True).start()
         except Exception as e:
             print(f"  (Tray disabled: {e})")
 
-    # If launched explicitly by user (not Windows boot and not silent),
-    # open Dashboard so the user sees the active window, hardware specs & playground!
-    if not is_silent and not is_autostart and not is_no_dashboard:
-        threading.Thread(target=open_dashboard, daemon=True).start()
+        if show_dashboard:
+            self.open_dashboard()
 
-    fix_label = get_hotkey_label("fix")
-    polish_label = get_hotkey_label("polish")
-    print(f"\n  Engine: {ENGINE.upper()}")
-    print(f"  {fix_label:<14} fix selected text (default mode: proofread & typos)")
-    print(f"  {polish_label:<14} polish selected text (professional mode: structure & tone)")
-    print("  Ctrl+Alt+Q     quit (or exit via System Tray)\n")
+        print(f"\n  Engine: {ENGINE.upper()}")
+        print(f"  {get_hotkey_label('fix'):<14} fix selected text")
+        print(f"  {get_hotkey_label('polish'):<14} polish selected text")
+        print("  Ctrl+Alt+Q     quit\n")
 
-    msg = wintypes.MSG()
-    try:
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            if msg.message == WM_HOTKEY:
-                if msg.wParam == ID_QUIT:
-                    break
-                show_busy_cursor()
-                mode = "polish" if msg.wParam in (ID_POLISH, ID_FALLBACK_POLISH) else "fix"
-                jobs.put((mode, None))
-            elif msg.message == WM_APP_RELOAD_HOTKEYS:
-                apply_system_hotkeys()
-    finally:
-        if hotkey_listener:
+        msg = wintypes.MSG()
+        try:
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == WM_HOTKEY:
+                    if msg.wParam == ID_QUIT:
+                        break
+                    self.trigger("polish" if msg.wParam in (ID_POLISH, ID_FALLBACK_POLISH) else "fix")
+                elif msg.message == WM_APP_RELOAD_HOTKEYS:
+                    self._reload_everything()
+                elif msg.message == WM_APP_SUSPEND_HOTKEYS:
+                    self.apply_system_hotkeys(suspended=bool(msg.wParam))
+        finally:
+            self.shutdown()
+
+    def shutdown(self):
+        if self.listener is not None:
             try:
-                hotkey_listener.stop()
+                self.listener.stop()
             except Exception:
                 pass
-        if tray:
-            try:
-                tray.stop()
-            except Exception:
-                pass
-        for hid in (ID_FIX, ID_POLISH, ID_QUIT, ID_FALLBACK_FIX, ID_FALLBACK_POLISH):
-            try:
-                user32.UnregisterHotKey(None, hid)
-            except Exception:
-                pass
+        if self.tray:
+            self.tray.stop()
+        for hid in ALL_HOTKEY_IDS:
+            user32.UnregisterHotKey(None, hid)
+        snap, _ = self._take_pending_restore()
+        if snap is not None:
+            clip.restore(snap)
         restore_cursor()
+        if self.ui is not None:
+            try:
+                self.ui.stop()
+            except Exception:
+                pass
         if ENGINE == "embedded":
             try:
                 from engine import get_default_engine
@@ -990,6 +831,161 @@ Global Hotkeys (any app in Windows):
             except Exception:
                 pass
         print("bye")
+
+
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
+
+HELP = """Fixelect - AI Offline Grammar & Executive Polish for Windows
+
+Usage:
+  fixelect.py                    Start in the system tray and open the dashboard
+  fixelect.py --silent           Start in the tray only (also: --autostart)
+  fixelect.py --dashboard        Open the dashboard standalone
+  fixelect.py --setup            Open model setup
+  fixelect.py "some text"        Fix text in the console
+  fixelect.py -p "some text"     Polish text in the console
+  fixelect.py --test             Run the self-test suite
+  fixelect.py --benchmark        Time a few sentences
+"""
+
+
+def _pop_flag(*names):
+    found = False
+    for n in names:
+        while n in sys.argv:
+            sys.argv.remove(n)
+            found = True
+    return found
+
+
+def main():
+    global MODEL, CANDIDATES, ENGINE
+
+    for i, a in enumerate(sys.argv):
+        if a == "--model" and i + 1 < len(sys.argv):
+            MODEL = sys.argv[i + 1]
+            CANDIDATES = 2 if MODELS.get(MODEL, {}).get("kind") == "ollama" else BEAMS
+            del sys.argv[i:i + 2]
+            break
+    for a in list(sys.argv):
+        if a.startswith("--engine="):
+            ENGINE = a.split("=", 1)[1]
+            sys.argv.remove(a)
+    if _pop_flag("--ollama"):
+        ENGINE = "ollama"
+    if _pop_flag("--embedded"):
+        ENGINE = "embedded"
+    _pop_flag("--no-sound", "--background", "--hide")
+
+    if _pop_flag("--help", "-h"):
+        print(HELP)
+        return
+
+    if _pop_flag("--download"):
+        from downloader import download_model
+        download_model(profile=load_config().get("model_profile", "3b"))
+        return
+
+    if _pop_flag("--setup"):
+        from ui import run_standalone
+        run_standalone("setup")
+        return
+
+    if _pop_flag("--dashboard", "--settings"):
+        from ui import run_standalone
+        run_standalone("dashboard")
+        return
+
+    polish_mode = _pop_flag("--polish", "-p")
+
+    if _pop_flag("--benchmark"):
+        fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
+        for s in [
+            "helo how are you im fne wht abt you",
+            "to behonst its kinda really strannge an i don know what s hapenning",
+            "tobehonest its kinda really difficult to change someint in that isutation and you can do that too",
+            "The MT300 SWIFT message failed validation in the PLSQL package.",
+        ]:
+            t0 = time.time()
+            out, _, _ = fix_preserving_layout(s, lambda t: fix(t, mode="fix"))
+            print(f"\nIn:    {s}\nOut:   {out}\nSpeed: {(time.time() - t0) * 1000:.1f}ms")
+        return
+
+    if _pop_flag("--test"):
+        sys.exit(0 if run_self_tests() else 1)
+
+    is_silent = _pop_flag("--silent")
+    is_autostart = _pop_flag("--autostart")
+    _pop_flag("--no-tray")
+    no_dashboard = _pop_flag("--no-dashboard")
+
+    args = sys.argv[1:]
+    if args and args[0] == "--raw":
+        args = args[1:]
+    if args:
+        text = " ".join(args)
+        fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
+        mode = "polish" if polish_mode else "fix"
+        started = time.time()
+        fixed, _, _ = fix_preserving_layout(text, lambda t: fix(t, mode=mode), mode=mode)
+        print(f"\n  mode: {mode.upper()}\n  in  : {text}\n  out : {fixed}\n  {(time.time() - started) * 1000:.0f}ms")
+        return
+
+    FixelectApp().run(
+        show_dashboard=not (is_silent or is_autostart or no_dashboard),
+        show_startup_toast=is_autostart or is_silent,
+    )
+
+
+def run_self_tests():
+    print(f"Running Fixelect self-tests with engine [{ENGINE.upper()}]...")
+    fix = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
+    from check_guard import normalise, expand
+    all_passed = True
+
+    def report(ok, line):
+        nonlocal all_passed
+        all_passed &= ok
+        print(f"[{'PASS' if ok else 'FAIL'}] {line}")
+
+    print("\n--- [1/3] Guard rules (no model) ---")
+    for inp, exp in [("enter your user id", "enter your user id"), ("i feel ill", "I feel ill"),
+                     ("she lets me go", "she lets me go"), ("im fne", "I'm fine")]:
+        out = expand(inp)
+        report(out == exp, f"expand({inp!r}) -> {out!r}")
+    for inp, exp in [("  hello  ", ("  ", "hello", "  ")), ("x", ("", "x", ""))]:
+        report(_split_edges(inp) == exp, f"edges({inp!r})")
+
+    print("\n--- [2/3] Default Fix Mode ---")
+    for inp, exp in [
+        ("your welcome", "you're welcome"),
+        ("i cant seem too focus on the the task", "I can't seem to focus on the task"),
+        ("better then that", "better than that"),
+        ("helo how are you", "hello how are you"),
+        ("tobehonest its kinda really difficult to change someint in that isutation and you can do that too",
+         "to be honest it's kind of really difficult to change something in that situation and you can do that too"),
+        ("This sentence is perfectly fine already.", "This sentence is perfectly fine already."),
+        ("- helo world\n- im fne", "- hello world\n- I'm fine"),
+    ]:
+        out, _, _ = fix_preserving_layout(inp, lambda t: fix(t, mode="fix"))
+        report(normalise(out) == normalise(exp), f"{inp.replace(chr(10), ' | ')!r} -> {out.replace(chr(10), ' | ')!r}")
+    out, _, _ = fix_preserving_layout("helo world ", lambda t: fix(t, mode="fix"))
+    report(out.endswith(" "), f"trailing space kept -> {out!r}")
+
+    print("\n--- [3/3] Professional Polish Mode ---")
+    for inp, required in [
+        ("tobehonest i think we need to change someint in that isutation cause it looks bad", ["situation", "honest"]),
+        ("The MT300 SWIFT message failed validation in the PLSQL package.", ["MT300", "SWIFT", "PLSQL"]),
+        ("im rly sorry for the delay i was stuck in traffic and my phone died so i couldnt email you earlier",
+         ["delay", "traffic"]),
+    ]:
+        out, _, _ = fix_preserving_layout(inp, lambda t: fix(t, mode="polish"), mode="polish")
+        report(all(tok.lower() in out.lower() for tok in required), f"{inp!r}\n       -> {out!r}")
+
+    print(f"\nSelf-tests {'PASSED ALL CHECKS' if all_passed else 'HAD FAILURES'}.")
+    return all_passed
 
 
 if __name__ == "__main__":

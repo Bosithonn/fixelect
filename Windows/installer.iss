@@ -74,9 +74,8 @@ function InitializeUninstall(): Boolean;
 var
   ErrorCode: Integer;
 begin
-  // Terminate any active application or sidecar engine instances cleanly
+  // Close Fixelect; its llama-server child exits with it (kill-on-close job object)
   Exec('taskkill.exe', '/f /im Fixelect.exe', '', SW_HIDE, ewWaitUntilTerminated, ErrorCode);
-  Exec('taskkill.exe', '/f /im llama-server.exe', '', SW_HIDE, ewWaitUntilTerminated, ErrorCode);
   Result := True;
 end;
 

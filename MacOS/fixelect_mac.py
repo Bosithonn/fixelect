@@ -1,32 +1,35 @@
 #!/usr/bin/env python3
 """
 Fixelect for macOS — Offline AI Grammar Correction & Executive Polish
-Apple Silicon Metal Acceleration • macOS Menu Bar Item • Quartz Global Hotkeys
+Apple Silicon Metal acceleration • Menu bar app • Global triggers
 
-Hotkeys:
-  Option x2 (⌥ ⌥)   ->  Default Fix Mode (Double-tap Option; 100% voice preserved)
-  Control x2 (⌃ ⌃)  ->  Professional Polish Mode (Double-tap Control; executive clarity)
-  Cmd + Option + Q  ->  Quit Fixelect (or customize shortcuts in Dashboard)
+Triggers (default):
+  Option x2 (⌥ ⌥)   ->  Fix typos & grammar (voice preserved)
+  Control x2 (⌃ ⌃)  ->  Professional polish
+Quit from the menu bar icon.
+
+Process layout: this daemon owns the menu bar (rumps, main thread), the
+keyboard listener and the AI engine. Every window (Dashboard, Setup,
+Permissions) runs as a separate short-lived process, because Cocoa and Tk both
+insist on the main thread and the old single-process design crashed or froze.
 
 Author: Bositxon Erkinxonov
-License: MIT / Apache 2.0 (100% Offline, Zero Telemetry)
+License: MIT (100% Offline, Zero Telemetry)
 """
 
-import atexit
 import os
 import pathlib
 import queue
-import re
 import signal
+import subprocess
 import sys
 import threading
 import time
 
 try:
     import fcntl
-    _has_fcntl = True
-except ImportError:
-    _has_fcntl = False
+except ImportError:  # pragma: no cover - macOS always has it
+    fcntl = None
 
 try:
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -36,411 +39,383 @@ try:
 except Exception:
     pass
 
-# Ensure tools directory is in sys.path
-_tools_dir = pathlib.Path(__file__).resolve().parent / "tools"
-if str(_tools_dir) not in sys.path:
-    sys.path.insert(0, str(_tools_dir))
+_here = pathlib.Path(__file__).resolve().parent
+for _p in (_here / "tools", pathlib.Path(getattr(sys, "_MEIPASS", _here)) / "tools"):
+    if _p.is_dir() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
-from config_mac import load_config, save_config, get_resource_path, play_sound
-from hardware_mac import detect_mac_hardware
-from downloader_mac import resolve_model, MODELS
-from check_guard import load_pipeline, acceptable, polish_guard, normalise
-from clipboard_mac import safe_copy, safe_paste, get_clipboard, set_clipboard
-from hotkey_mac import MacHotkeyListener, check_accessibility_permissions
-from status_bar import MacStatusBar
+from config_mac import load_config, get_hotkey_label, get_lock_path, get_config_path, play_sound  # noqa: E402
+from downloader_mac import resolve_model, MODELS  # noqa: E402
+from check_guard import load_pipeline, fix_preserving_layout, normalise, expand  # noqa: E402
+import clipboard_mac as clip  # noqa: E402
+from hotkey_mac import MacHotkeyListener, check_accessibility_permissions  # noqa: E402
 
-# --------------------------------------------------------------------------
-# Configuration & Defaults
-# --------------------------------------------------------------------------
+MODEL = "qwen2.5"
+ENGINE = load_config().get("engine", "embedded")
+MAX_SELECTION_CHARS = 12000
+RESTORE_DELAY = 0.8
 
-CFG = load_config()
-MODEL = CFG.get("model_profile", "3b")
-ENGINE = CFG.get("engine", "embedded")
-SOUND_ENABLED = CFG.get("sound_enabled", True)
-BEAMS = 3
-FAST = False
-CANDIDATES = 2 if MODELS.get(MODEL, {}).get("kind") == "ollama" else BEAMS
-
-_active_dashboard = [None]
-_dashboard_lock = threading.Lock()
-_lock_file_handle = None
+_lock_handle = None
 
 
-def ensure_single_instance(on_duplicate=None):
-    """
-    Ensure only one instance of Fixelect runs using POSIX advisory lock.
-    """
-    global _lock_file_handle
-    if not _has_fcntl:
-        return
-
-    lock_path = "/tmp/fixelect.lock"
+def acquire_single_instance():
+    """Per-user advisory lock; the file also publishes our PID for window processes."""
+    global _lock_handle
+    if fcntl is None:
+        return True
+    path = get_lock_path()
     try:
-        _lock_file_handle = open(lock_path, "w")
-        fcntl.flock(_lock_file_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _lock_file_handle.write(str(os.getpid()))
-        _lock_file_handle.flush()
-    except (IOError, BlockingIOError):
-        print("  [Fixelect] Another instance is already running.")
-        if on_duplicate:
-            on_duplicate()
-        sys.exit(0)
+        _lock_handle = open(path, "a+")
+        fcntl.flock(_lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_handle.seek(0)
+        _lock_handle.truncate()
+        _lock_handle.write(str(os.getpid()))
+        _lock_handle.flush()
+        return True
+    except OSError:
+        return False
 
 
-# --------------------------------------------------------------------------
-# Text processing preserving exact whitespace and structure
-# --------------------------------------------------------------------------
-
-def fix_preserving_layout(text, fix_fn, mode="fix"):
-    """Fix grammar and spelling while rigorously preserving line breaks and indentation."""
-    if "\n" not in text:
-        res = fix_fn(text)
-        if isinstance(res, tuple):
-            return res
-        return res, [], text
-
-    # In professional mode, if text has no bullet/numbered list items,
-    # process the whole text in one unified pass to preserve paragraph coherence and maximize speed.
-    if mode == "polish":
-        has_list_items = any(
-            re.match(r"^\s*(?:[-*+]\s+|\d+\.\s+)", line)
-            for line in text.splitlines()
-        )
-        if not has_list_items:
-            res = fix_fn(text)
-            if isinstance(res, tuple):
-                return res
-            return res, [], text
-
-    newline = "\r\n" if "\r\n" in text else "\n"
-    lines = text.split(newline)
-    fixed_lines = []
-    all_applied = []
-    all_expanded = []
-    word_offset = 0
-
-    for line in lines:
-        if not line.strip():
-            fixed_lines.append(line)
-            continue
-
-        m_lead = re.match(r"^(\s*(?:[-*+]\s+|\d+\.\s+)?)(.*?)(\s*)$", line)
-        if m_lead:
-            prefix, content, suffix = m_lead.group(1), m_lead.group(2), m_lead.group(3)
-            if content.strip():
-                fixed_content, applied, expanded = fix_fn(content)
-                fixed_lines.append(prefix + fixed_content + suffix)
-                for s, e, words, votes in applied:
-                    all_applied.append((s + word_offset, e + word_offset, words, votes))
-                word_offset += len(expanded.split())
-                all_expanded.append(expanded)
-            else:
-                fixed_lines.append(line)
-        else:
-            fixed_content, applied, expanded = fix_fn(line)
-            fixed_lines.append(fixed_content)
-            for s, e, words, votes in applied:
-                all_applied.append((s + word_offset, e + word_offset, words, votes))
-            word_offset += len(expanded.split())
-            all_expanded.append(expanded)
-
-    return newline.join(fixed_lines), all_applied, " ".join(all_expanded)
-
-
-# --------------------------------------------------------------------------
-# Main Execution Pipeline
-# --------------------------------------------------------------------------
-
-def run_hotkey_action(mode: str = "fix", jobs_queue=None, cache=None):
-    """
-    Executes when user hits Cmd+Option+F or Cmd+Option+P:
-    1. Grabs selected text via safe_copy()
-    2. Runs inference through candidate guard
-    3. Replaces text via safe_paste()
-    4. Plays native macOS completion chime (afplay)
-    """
-    t0 = time.time()
-    text = safe_copy()
-    if not text or not text.strip():
-        return
-
-    # Check cache
-    cache_key = (text, mode)
-    if cache is not None and cache_key in cache:
-        fixed = cache[cache_key]
-        if fixed != text:
-            safe_paste(fixed)
-            play_sound(mode)
-        return
-
+def running_daemon_pid():
     try:
-        from check_guard import load_pipeline
-        pipeline = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
-
-        fixed, applied, expanded = fix_preserving_layout(
-            text,
-            lambda t: pipeline(t, mode=mode),
-            mode=mode
-        )
-
-        took_ms = (time.time() - t0) * 1000
-
-        if fixed.strip() == text.strip():
-            print(f"  = [Left alone] ({took_ms:.0f}ms)")
-        else:
-            safe_paste(fixed)
-            play_sound(mode)
-            label = "POLISHED" if mode == "polish" else "FIXED"
-            print(f"  ~ [{label}] ({took_ms:.0f}ms)")
-            print(f"    In:  {text[:60]}")
-            print(f"    Out: {fixed[:60]}")
-
-        if cache is not None:
-            cache[cache_key] = fixed
-            if len(cache) > 50:
-                cache.pop(next(iter(cache)))
-
-    except Exception as e:
-        print(f"  ! Error during {mode} action: {e}")
+        pid = int(get_lock_path().read_text().strip() or 0)
+        if pid and pid != os.getpid():
+            os.kill(pid, 0)
+            return pid
+    except Exception:
+        pass
+    return None
 
 
-# --------------------------------------------------------------------------
-# Dashboard & Setup Openers
-# --------------------------------------------------------------------------
+def ui_command(kind):
+    if getattr(sys, "frozen", False):
+        return [sys.executable, f"--{kind}"]
+    return [sys.executable, str(pathlib.Path(__file__).resolve()), f"--{kind}"]
 
-def open_dashboard(fix_fn=None, on_quit=None, hotkey_listener=None):
-    with _dashboard_lock:
-        dash = _active_dashboard[0]
-        if dash and dash.root:
+
+def notify(title, message):
+    try:
+        import rumps
+        rumps.notification("Fixelect", title, message)
+        return
+    except Exception:
+        pass
+    try:
+        safe = message.replace('"', "'")
+        subprocess.Popen(["osascript", "-e", f'display notification "{safe}" with title "Fixelect" subtitle "{title}"'],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+class MacApp:
+    def __init__(self):
+        self.jobs = queue.Queue()
+        self.fix = None
+        self.status_info = {"state": "loading", "detail": "Starting…", "model": load_config().get("model_profile", "3b")}
+        self.listener = None
+        self.bar = None
+        self.ui_procs = {}
+        self._restore_lock = threading.Lock()
+        self._restore_timer = None
+        self._pending = None
+        self._last_hotkey_done = 0.0
+        self._want_dashboard = threading.Event()
+        self._stopping = False
+
+    # -- status ---------------------------------------------------------------
+
+    def set_status(self, state, detail=""):
+        self.status_info.update(state=state, detail=detail, model=load_config().get("model_profile", "3b"))
+
+    def status(self):
+        return dict(self.status_info)
+
+    # -- engine ---------------------------------------------------------------
+
+    def _load_engine(self):
+        self.set_status("loading", "Loading the AI model…")
+        try:
+            if ENGINE == "embedded":
+                from engine_mac import get_default_engine
+                get_default_engine(model_profile=load_config().get("model_profile", "3b")).publish = True
+            self.fix = load_pipeline(MODEL, fast=False, beams=1, engine_type=ENGINE)
+            self.set_status("ready", "Ready")
+            return True
+        except Exception as e:
+            self.fix = None
+            self.set_status("error", str(e))
+            print(f"  ! engine failed: {e}")
+            return False
+
+    def worker(self):
+        self._load_engine()
+        while True:
+            kind, payload, queued_at = self.jobs.get()
             try:
-                dash.root.lift()
-                dash.root.focus_force()
-                return
+                if kind == "switch_model":
+                    from engine_mac import get_default_engine
+                    get_default_engine(model_profile=payload)
+                    if self._load_engine():
+                        notify("Model ready", f"Now using {MODELS.get(payload, {}).get('short_name', payload)}.")
+                elif kind in ("fix", "polish"):
+                    if queued_at < self._last_hotkey_done:
+                        continue
+                    try:
+                        self._do_hotkey(kind)
+                    finally:
+                        self._last_hotkey_done = time.time()
+            except Exception as e:
+                print(f"  ! {kind} failed: {e}")
+                if kind in ("fix", "polish"):
+                    notify("Couldn't finish", str(e) or type(e).__name__)
+
+    def trigger(self, mode):
+        self.jobs.put((mode, None, time.time()))
+
+    # -- clipboard restore ------------------------------------------------------
+
+    def _take_pending(self):
+        with self._restore_lock:
+            if self._restore_timer is not None:
+                self._restore_timer.cancel()
+                self._restore_timer = None
+                snap, self._pending = self._pending, None
+                return snap
+            return None
+
+    def _schedule_restore(self, snapshot, delay, only_if_count=None):
+        if snapshot is None:
+            return
+
+        def run():
+            with self._restore_lock:
+                if self._restore_timer is None:
+                    return
+                self._restore_timer, self._pending = None, None
+                if only_if_count is not None and clip.change_count() != only_if_count:
+                    return  # the user copied something new; keep it
+                clip.restore(snapshot)
+
+        with self._restore_lock:
+            if self._restore_timer is not None:
+                self._restore_timer.cancel()
+            self._pending = snapshot
+            self._restore_timer = threading.Timer(delay, run)
+            self._restore_timer.daemon = True
+            self._restore_timer.start()
+
+    def _do_hotkey(self, mode):
+        original = self._take_pending()
+        if original is None:
+            original = clip.snapshot()
+        clip.wait_for_modifiers()
+        if not clip.copy_selection():
+            self._schedule_restore(original, 0.05)
+            return
+        text = clip.get_text()
+        if not text or not text.strip():
+            self._schedule_restore(original, 0.05)
+            return
+        if len(text) > MAX_SELECTION_CHARS:
+            self._schedule_restore(original, 0.05)
+            notify("Selection too long", f"Select fewer than {MAX_SELECTION_CHARS:,} characters at a time.")
+            return
+        if self.fix is None and not self._load_engine():
+            self._schedule_restore(original, 0.05)
+            raise RuntimeError(self.status_info.get("detail") or "The AI engine is not available.")
+
+        started = time.time()
+        self.set_status("busy", "Working…")
+        try:
+            fixed = fix_preserving_layout(text, lambda t: self.fix(t, mode=mode), mode=mode)[0]
+        finally:
+            self.set_status("ready", "Ready")
+        if fixed == text:
+            self._schedule_restore(original, 0.05)
+            return
+        clip.set_text(fixed, transient=True)
+        count = clip.change_count()
+        time.sleep(0.03)
+        clip.paste()
+        play_sound(mode)
+        print(f"  ~ [{mode.upper()}] {(time.time() - started) * 1000:.0f}ms")
+        self._schedule_restore(original, RESTORE_DELAY, only_if_count=count)
+
+    # -- windows (separate processes) ---------------------------------------------
+
+    def open_window(self, kind):
+        proc = self.ui_procs.get(kind)
+        if proc is not None and proc.poll() is None:
+            try:
+                os.kill(proc.pid, signal.SIGUSR1)  # ask it to come forward
             except Exception:
-                _active_dashboard[0] = None
+                pass
+            return proc
+        try:
+            proc = subprocess.Popen(ui_command(kind))
+            self.ui_procs[kind] = proc
+            return proc
+        except Exception as e:
+            print(f"  ! could not open {kind}: {e}")
+            return None
 
-        from ui_mac import DashboardWindow
-        dash = DashboardWindow(fix_fn=fix_fn, on_quit=on_quit, hotkey_listener=hotkey_listener)
-        _active_dashboard[0] = dash
+    # -- background watchers ----------------------------------------------------------
 
-    try:
-        dash.show()
-    finally:
-        with _dashboard_lock:
-            if _active_dashboard[0] is dash:
-                _active_dashboard[0] = None
+    def config_watcher(self):
+        path = get_config_path()
+        last_mtime = path.stat().st_mtime if path.exists() else 0
+        cfg = load_config()
+        while not self._stopping:
+            time.sleep(1.0)
+            try:
+                mtime = path.stat().st_mtime if path.exists() else 0
+            except OSError:
+                continue
+            if mtime == last_mtime:
+                continue
+            last_mtime = mtime
+            new = load_config()
+            if any(new.get(k) != cfg.get(k) for k in ("trigger_mode", "custom_fix", "custom_polish")):
+                if self.listener:
+                    self.listener.reload(new)
+            if new.get("model_profile") != cfg.get("model_profile") and resolve_model(new.get("model_profile")):
+                self.jobs.put(("switch_model", new.get("model_profile"), time.time()))
+            cfg = new
+
+    def permission_watcher(self):
+        while not self._stopping and not check_accessibility_permissions(prompt=False):
+            time.sleep(2.0)
+        if not self._stopping and self.listener:
+            self.listener.reload(load_config())
+            print("  [Fixelect] Accessibility granted - triggers active.")
+
+    # -- lifecycle --------------------------------------------------------------------
+
+    def quit(self):
+        self._stopping = True
+        try:
+            import rumps
+            rumps.quit_application()
+        except Exception:
+            os._exit(0)
+
+    def shutdown(self):
+        self._stopping = True
+        if self.listener:
+            self.listener.stop()
+        snap = self._take_pending()
+        if snap is not None:
+            clip.restore(snap)
+        for proc in self.ui_procs.values():
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+            except Exception:
+                pass
+        try:
+            from engine_mac import get_default_engine
+            get_default_engine().stop()
+        except Exception:
+            pass
+
+    def run(self, silent):
+        if not acquire_single_instance():
+            pid = running_daemon_pid()
+            if pid:
+                os.kill(pid, signal.SIGUSR1)  # the running copy opens its dashboard
+            return
+
+        signal.signal(signal.SIGTERM, lambda *_: self.quit())
+        signal.signal(signal.SIGINT, lambda *_: self.quit())
+        signal.signal(signal.SIGUSR1, lambda *_: self._want_dashboard.set())
+
+        if ENGINE == "embedded" and not resolve_model(load_config().get("model_profile", "3b")):
+            subprocess.run(ui_command("setup"))
+            if not resolve_model(load_config().get("model_profile", "3b")):
+                print("  [Fixelect] Setup cancelled - exiting.")
+                return
+
+        threading.Thread(target=self.worker, daemon=True).start()
+        self.listener = MacHotkeyListener(on_fix=lambda: self.trigger("fix"),
+                                          on_polish=lambda: self.trigger("polish"), config=load_config())
+        self.listener.start()
+        threading.Thread(target=self.config_watcher, daemon=True).start()
+
+        if not check_accessibility_permissions(prompt=False):
+            self.open_window("permissions")
+            threading.Thread(target=self.permission_watcher, daemon=True).start()
+        elif not silent:
+            self.open_window("dashboard")
+
+        print(f"  Fixelect is running. Fix: {get_hotkey_label('fix')}  Polish: {get_hotkey_label('polish')}")
+        from status_bar import MacStatusBar
+        self.bar = MacStatusBar(
+            on_open_dashboard=lambda: self.open_window("dashboard"),
+            on_quit=self.quit,
+            get_status=self.status,
+            want_dashboard=self._want_dashboard,
+        )
+        try:
+            self.bar.run()  # blocks on the main thread until quit
+        finally:
+            self.shutdown()
 
 
-def open_setup():
-    from ui_mac import SetupWindow
-    SetupWindow().show()
-
-
-# --------------------------------------------------------------------------
-# Test Suite Validator
-# --------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 
 def run_tests():
-    print(f"Running Fixelect macOS self-tests with engine [{ENGINE.upper()}] (Default Mode + Professional Polish Mode)...")
-    hw = detect_mac_hardware()
-    print(f"  Device: {hw['device_name']} (RAM: {hw['ram_gb']} GB)")
+    print(f"Running Fixelect macOS self-tests [{ENGINE.upper()}]...")
+    ok_all = True
 
-    from check_guard import load_pipeline
+    def report(ok, text):
+        nonlocal ok_all
+        ok_all &= ok
+        print(f"[{'PASS' if ok else 'FAIL'}] {text}")
+
+    for inp, exp in [("enter your user id", "enter your user id"), ("i feel ill", "I feel ill"), ("im fne", "I'm fine")]:
+        report(expand(inp) == exp, f"expand({inp!r}) -> {expand(inp)!r}")
     try:
-        pipeline = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
+        pipeline = load_pipeline(MODEL, fast=False, beams=1, engine_type=ENGINE)
     except Exception as e:
         print(f"Failed to load pipeline: {e}")
         return False
+    for inp, exp in [("your welcome", "you're welcome"), ("better then that", "better than that"),
+                     ("helo how are you", "hello how are you"), ("- helo world\n- im fne", "- hello world\n- I'm fine")]:
+        out = fix_preserving_layout(inp, lambda t: pipeline(t, mode="fix"))[0]
+        report(normalise(out) == normalise(exp), f"{inp!r} -> {out!r}")
+    out = fix_preserving_layout("The MT300 SWIFT message failed validation in the PLSQL package.",
+                                lambda t: pipeline(t, mode="polish"), mode="polish")[0]
+    report(all(t in out for t in ("MT300", "SWIFT", "PLSQL")), f"polish keeps identifiers -> {out!r}")
+    print(f"\nSelf-tests {'PASSED' if ok_all else 'HAD FAILURES'}.")
+    return ok_all
 
-    fix_cases = [
-        ("your welcome", "you're welcome"),
-        ("i cant seem too focus on the the task", "I can't seem to focus on the task"),
-        ("better then that", "better than that"),
-        ("helo how are you", "hello how are you"),
-        ("tobehonest its kinda really difficult to change someint in that isutation and you can do that too",
-         "to be honest, it's kind of really difficult to change something in that situation, and you can do that too."),
-        ("This sentence is perfectly fine already.", "This sentence is perfectly fine already."),
-        ("- helo world\n- im fne", "- hello world\n- I'm fine"),
-    ]
-    all_passed = True
-    print("\n--- [1/2] Default Fix Mode Tests (⌥⌘F) ---")
-    for inp, exp in fix_cases:
-        out, _, _ = fix_preserving_layout(inp, lambda t: pipeline(t, mode="fix"))
-        ok = normalise(out) == normalise(exp)
-        if not ok:
-            all_passed = False
-        status = "PASS" if ok else "FAIL"
-        print(f"[{status}] In: '{inp.replace(chr(10), ' | ')}' -> Out: '{out.replace(chr(10), ' | ')}'")
-
-    print("\n--- [2/2] Professional Polish Mode Tests (⌥⌘P) ---")
-    pro_cases = [
-        ("tobehonest i think we need to change someint in that isutation cause it looks bad",
-         ["situation", "honest"]),
-        ("The MT300 SWIFT message failed validation in the PLSQL package.",
-         ["MT300", "SWIFT", "PLSQL"]),
-        ("im rly sorry for the delay i was stuck in traffic and my phone died so i couldnt email you earlier",
-         ["delay", "traffic"]),
-    ]
-    for inp, required_tokens in pro_cases:
-        out, _, _ = fix_preserving_layout(inp, lambda t: pipeline(t, mode="polish"), mode="polish")
-        ok = all(tok.lower() in out.lower() for tok in required_tokens)
-        if not ok:
-            all_passed = False
-        status = "PASS" if ok else "FAIL"
-        print(f"[{status}] In:  '{inp}'\n       Out: '{out}'")
-
-    print(f"\nSelf-tests {'PASSED ALL CHECKS (10/10)' if all_passed else 'HAD FAILURES'}.")
-    return all_passed
-
-
-# --------------------------------------------------------------------------
-# Main Entry Point
-# --------------------------------------------------------------------------
 
 def main():
-    global MODEL, ENGINE, SOUND_ENABLED, CANDIDATES
-
-    # CLI option parsing
-    for i, a in enumerate(sys.argv):
-        if a == "--model" and i + 1 < len(sys.argv):
-            MODEL = sys.argv[i + 1]
-            CANDIDATES = 2 if MODELS.get(MODEL, {}).get("kind") == "ollama" else BEAMS
-            del sys.argv[i:i + 2]
-            break
-
-    if "--no-sound" in sys.argv:
-        SOUND_ENABLED = False
-        sys.argv.remove("--no-sound")
-
-    if "--ollama" in sys.argv:
-        ENGINE = "ollama"
-        sys.argv.remove("--ollama")
-    elif "--embedded" in sys.argv:
-        ENGINE = "embedded"
-        sys.argv.remove("--embedded")
-
-    if "--help" in sys.argv or "-h" in sys.argv:
-        print("""Fixelect — AI Offline Grammar & Executive Polish for macOS
-
-Usage:
-  python3 fixelect_mac.py                 Start Fixelect in macOS Menu Bar (default)
-  python3 fixelect_mac.py --dashboard     Open Settings, Mode Guide & Live Playground
-  python3 fixelect_mac.py --setup         Open Model Setup & Hardware Downloader
-  python3 fixelect_mac.py "some text"     Fix text directly in console (Default Fix Mode)
-  python3 fixelect_mac.py -p "some text"  Polish text directly (Professional Polish Mode)
-  python3 fixelect_mac.py --test          Run macOS self-test validation suite
-
-Global Hotkeys:
-  Option x2 (⌥ ⌥)     Default Fix Mode (Double-tap Option; 100% voice preserved)
-  Control x2 (⌃ ⌃)    Professional Polish Mode (Double-tap Control; executive clarity)
-  Cmd + Option + Q    Quit Fixelect (or customize in Dashboard)
-""")
+    args = sys.argv[1:]
+    if "--help" in args or "-h" in args:
+        print(__doc__)
         return
-
-    if "--test" in sys.argv:
+    for kind in ("dashboard", "setup", "permissions"):
+        if f"--{kind}" in args:
+            from ui_mac import run_standalone
+            run_standalone(kind)
+            return
+    if "--test" in args:
         sys.exit(0 if run_tests() else 1)
 
-    # Direct console fixing
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
-        mode = "fix"
-        text = sys.argv[1]
-        if text == "-p" and len(sys.argv) > 2:
-            mode = "polish"
-            text = " ".join(sys.argv[2:])
-        else:
-            text = " ".join(sys.argv[1:])
-
-        from check_guard import load_pipeline
-        pipeline = load_pipeline(MODEL, fast=FAST, beams=CANDIDATES, engine_type=ENGINE)
-        res, _, _ = fix_preserving_layout(text, lambda t: pipeline(t, mode=mode), mode=mode)
-        print(res)
+    silent = "--silent" in args or "--autostart" in args
+    rest = [a for a in args if not a.startswith("-psn_") and a not in ("--silent", "--autostart", "--no-bar")]
+    if rest and not rest[0].startswith("--"):
+        mode = "polish" if rest[0] == "-p" else "fix"
+        text = " ".join(rest[1:] if mode == "polish" else rest)
+        pipeline = load_pipeline(MODEL, fast=False, beams=1, engine_type=ENGINE)
+        print(fix_preserving_layout(text, lambda t: pipeline(t, mode=mode), mode=mode)[0])
         return
 
-    # Direct Setup
-    if "--setup" in sys.argv:
-        open_setup()
-        return
-
-    # Direct Dashboard
-    if "--dashboard" in sys.argv:
-        open_dashboard(on_quit=lambda: os.kill(os.getpid(), signal.SIGTERM))
-        return
-
-    # 0. Single-Instance Check
-    ensure_single_instance(on_duplicate=lambda: open_dashboard())
-
-    # 1. Onboarding check: ensure model is downloaded
-    if ENGINE == "embedded":
-        if not resolve_model(MODEL):
-            print("  [Fixelect] Model not found. Launching initial setup window...")
-            open_setup()
-            if not resolve_model(MODEL):
-                print("  [Fixelect] Setup cancelled or model not downloaded. Exiting.")
-                return
-
-    # 2. Check macOS Accessibility Permissions with interactive onboarding
-    if sys.platform == "darwin" and not check_accessibility_permissions(prompt=False):
-        if "--silent" not in sys.argv and "--autostart" not in sys.argv and "--test" not in sys.argv:
-            try:
-                from ui_mac import AccessibilityGuideWindow
-                AccessibilityGuideWindow().show()
-            except Exception as e:
-                print(f"  ! Note on Accessibility: {e}")
-    else:
-        check_accessibility_permissions(prompt=True)
-
-    cache = {}
-
-    def handle_fix():
-        run_hotkey_action(mode="fix", cache=cache)
-
-    def handle_polish():
-        run_hotkey_action(mode="polish", cache=cache)
-
-    def handle_quit():
-        print("\n  [Fixelect] Quitting...")
-        os.kill(os.getpid(), signal.SIGTERM)
-
-    # 3. Start Global Hotkey Listener
-    listener = MacHotkeyListener(on_fix=handle_fix, on_polish=handle_polish, on_quit=handle_quit)
-    listener_ok = listener.start()
-
-    # 4. Start Menu Bar Extra item
-    bar = None
-    if "--no-bar" not in sys.argv and "--no-tray" not in sys.argv:
-        bar = MacStatusBar(
-            on_open_dashboard=lambda: open_dashboard(on_quit=handle_quit, hotkey_listener=listener),
-            on_open_setup=open_setup,
-            on_open_words=lambda: open_dashboard(on_quit=handle_quit, hotkey_listener=listener),
-            on_quit=handle_quit,
-        )
-        bar.start()
-
-    from config_mac import load_config, get_hotkey_label
-    cfg = load_config()
-    fix_lbl = get_hotkey_label("fix", cfg)
-    pol_lbl = get_hotkey_label("polish", cfg)
-
-    print("=======================================================")
-    print(" Fixelect is active in the macOS Menu Bar")
-    print(f" - Press {fix_lbl} to fix typos & grammar (Default: Double-tap Option)")
-    print(f" - Press {pol_lbl} to polish into executive prose (Default: Double-tap Control)")
-    print(" - Press ⌥⌘Q (Cmd + Option + Q) to quit")
-    print(" - Custom shortcuts can be configured in the Dashboard")
-    print("=======================================================")
-
-    # Show dashboard on first manual launch
-    if "--silent" not in sys.argv and "--autostart" not in sys.argv:
-        open_dashboard(on_quit=handle_quit, hotkey_listener=listener)
-
-    # Main thread keep-alive
-    try:
-        while True:
-            time.sleep(1.0)
-    except (KeyboardInterrupt, SystemExit):
-        listener.stop()
-        if bar:
-            bar.stop()
+    MacApp().run(silent=silent)
 
 
 if __name__ == "__main__":

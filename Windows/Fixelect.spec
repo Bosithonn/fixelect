@@ -39,6 +39,13 @@ hidden_imports = [
     'tools.tray',
     'tools.ui',
     'tools.hotkey_win',
+    'tools.clipboard_win',
+    'tools.ui_kit',
+    'clipboard_win',
+    'ui_kit',
+    'ui',
+    'tray',
+    'engine',
     'pynput',
     'pynput.keyboard._win32',
 ]

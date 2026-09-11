@@ -100,13 +100,49 @@ def load_config() -> dict:
     return DEFAULT_CONFIG.copy()
 
 
-def save_config(cfg: dict) -> None:
+def save_config(cfg: dict) -> bool:
+    """Atomic write: the daemon polls this file, so it must never see half of it."""
     cfg_path = get_config_path()
+    tmp = cfg_path.with_suffix(".json.tmp")
     try:
-        with open(cfg_path, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
+        os.replace(tmp, cfg_path)
+        return True
     except Exception as e:
         print(f"Error saving config: {e}")
+        return False
+
+
+def update_config(**changes) -> dict:
+    """Merge `changes` into the config on disk (never save a stale copy)."""
+    cfg = load_config()
+    cfg.update(changes)
+    save_config(cfg)
+    return cfg
+
+
+def validate_hotkey(combo: str):
+    """(ok, message). pynput cannot swallow keys, so a shortcut must include
+    ⌘, ⌃ or ⌥ - otherwise the key would also be typed into the app."""
+    tokens = [t.strip().lower().strip("<>") for t in (combo or "").replace("+", " ").split() if t.strip()]
+    mods = {"cmd", "command", "ctrl", "control", "alt", "option", "opt", "shift"}
+    keys = [t for t in tokens if t not in mods]
+    if len(keys) != 1:
+        return False, "Use modifiers plus exactly one key, e.g. ⌃⌥F."
+    if not any(t in mods - {"shift"} for t in tokens) and not (keys[0].startswith("f") and keys[0][1:].isdigit()):
+        return False, "Add ⌘, ⌃ or ⌥ — a plain key would be typed into your document."
+    return True, ""
+
+
+def get_lock_path() -> pathlib.Path:
+    """Per-user single-instance lock (a shared /tmp path blocked other Mac users)."""
+    return get_config_dir() / "fixelect.lock"
+
+
+def get_runtime_path() -> pathlib.Path:
+    """Where the daemon publishes its engine port so window processes can attach."""
+    return get_config_dir() / "runtime.json"
 
 
 def get_launch_agent_path() -> pathlib.Path:

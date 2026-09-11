@@ -35,7 +35,7 @@ Windows/
 
 1. Ensure Python 3.10+ is installed:
    ```bash
-   pip install pyperclip pystray Pillow psutil
+   pip install -r requirements.txt
    ```
 2. Launch Fixelect:
    ```bash
@@ -49,11 +49,15 @@ Windows/
 
 ## Windows Hotkeys
 
-| Hotkey | Action |
+| Trigger (default) | Action |
 |---|---|
-| **Ctrl + Alt + F** | **Default Proofreading**: Fix typos, glued words, slang & grammar (100% voice preserved) |
-| **Ctrl + Alt + P** | **Professional Polish**: Refine structure into articulate executive English (all details retained) |
-| **Ctrl + Alt + Q** | Gracefully quit Fixelect |
+| **Alt, Alt** (double-tap) | **Fix**: typos, glued words and grammar, your voice preserved |
+| **Ctrl, Ctrl** (double-tap) | **Polish**: rewrite into clear, professional English |
+| **Ctrl + Alt + F / P** | Always-available backup for Fix / Polish |
+| **Ctrl + Alt + Q** | Quit Fixelect |
+
+Other presets (Alt + Space, Classic Ctrl + Alt + F/P) and fully custom shortcuts can be
+recorded in **Dashboard → Shortcuts**. Conflicts with other apps are reported there.
 
 ## Building Production Packages
 

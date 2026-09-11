@@ -1,14 +1,18 @@
 """
-Windows System Tray integration for Fixelect using pystray and Pillow.
-Provides a persistent background controller, status indicators, and quick-access menu.
+Windows system tray for Fixelect (pystray).
+
+Every label is computed when the menu is rebuilt, so the tray always shows the
+hotkeys, model and engine state that are actually in effect, and every toggle
+re-reads the config from disk before writing it (the dashboard may have changed
+other settings in the meantime).
 """
 
 import pathlib
 import sys
 import threading
+
 from PIL import Image, ImageDraw
 
-# Ensure tools directory is in sys.path
 _tools_dir = pathlib.Path(__file__).resolve().parent
 if str(_tools_dir) not in sys.path:
     sys.path.insert(0, str(_tools_dir))
@@ -19,48 +23,26 @@ try:
         import ctypes
         try:
             uxtheme = ctypes.windll.uxtheme
-            # SetPreferredAppMode(2) = ForceDark
             SetPreferredAppMode = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int)((135, uxtheme))
-            SetPreferredAppMode(2)
+            SetPreferredAppMode(2)  # ForceDark context menus
             FlushMenuThemes = ctypes.WINFUNCTYPE(None)((136, uxtheme))
             FlushMenuThemes()
-            
-            # Hook pystray window creation to set AllowDarkModeForWindow
-            import pystray._win32
-            AllowDarkModeForWindow = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_bool)((133, uxtheme))
-            _orig_create_window = pystray._win32.Icon._create_window
-            SetWindowTheme = uxtheme.SetWindowTheme
-            SetWindowTheme.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p]
-            def _dark_create_window(self, atom):
-                hwnd = _orig_create_window(self, atom)
-                try:
-                    AllowDarkModeForWindow(hwnd, True)
-                    SetWindowTheme(hwnd, "DarkMode_Explorer", None)
-                    val = ctypes.c_int(1)
-                    ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(val), ctypes.sizeof(val))
-                except Exception:
-                    pass
-                return hwnd
-            pystray._win32.Icon._create_window = _dark_create_window
         except Exception:
             pass
 except ImportError:
     pystray = None
 
-from config import load_config, save_config, is_auto_start_enabled, set_auto_start, get_resource_path
-from hardware import detect_hardware
-from downloader import MODELS, resolve_model
+from config import (  # noqa: E402
+    load_config, update_config, is_auto_start_enabled, set_auto_start,
+    get_resource_path, get_hotkey_label,
+)
+from downloader import MODELS, resolve_model  # noqa: E402
 
 
 def create_tray_icon(size=64, active=True):
-    """
-    Generate the system tray icon using the official Fixelect brand logo symbol.
-    Provides pristine 32-bit alpha transparency with razor-sharp anti-aliased edges.
-    """
     icon_path = get_resource_path("resources/tray_icon.png")
     if not icon_path.is_file():
         icon_path = get_resource_path("resources/app_icon.png")
-
     if icon_path.is_file():
         try:
             image = Image.open(icon_path).convert("RGBA")
@@ -69,154 +51,109 @@ def create_tray_icon(size=64, active=True):
             return image
         except Exception:
             pass
-
-    # Fallback if image file is not found
-    image = Image.new("RGBA", (size, size), (7, 11, 25, 255))
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    margin = 4
-    draw.rounded_rectangle(
-        [margin, margin, size - margin, size - margin],
-        radius=14,
-        fill=(15, 22, 46, 255),
-        outline=(29, 104, 254, 240),
-        width=2,
-    )
-    if active:
-        draw.ellipse([size - 9, size - 9, size - 1, size - 1], fill=(16, 185, 129, 255))
+    draw.rounded_rectangle([4, 4, size - 4, size - 4], radius=14, fill=(18, 21, 28, 255),
+                           outline=(61, 123, 255, 255), width=3)
     return image
 
 
-class TrayManager:
-    """Manages the lifecycle of the system tray icon."""
+_STATE_TEXT = {"loading": "Starting…", "ready": "Ready", "error": "Needs attention", "busy": "Working…"}
 
-    def __init__(self, on_open_settings=None, on_quit=None):
+
+class TrayManager:
+    def __init__(self, on_open_settings=None, on_quit=None, on_switch_model=None, get_status=None):
         self.on_open_settings = on_open_settings
         self.on_quit = on_quit
+        self.on_switch_model = on_switch_model
+        self.get_status = get_status or (lambda: {"state": "ready"})
         self.icon = None
         self._thread = None
-        self.config = load_config()
-        self.hw = detect_hardware()
 
-    def _toggle_sound(self, icon, item):
-        new_val = not self.config.get("sound_enabled", True)
-        self.config["sound_enabled"] = new_val
-        save_config(self.config)
+    # -- actions -------------------------------------------------------------
 
-    def _toggle_autostart(self, icon, item):
-        curr = is_auto_start_enabled()
-        set_auto_start(not curr)
-        self.config["auto_start"] = not curr
-        save_config(self.config)
-
-    def _handle_open_settings(self, icon=None, item=None):
+    def _open(self, icon=None, item=None):
         if self.on_open_settings:
-            # Run on a separate thread so it doesn't block the tray message loop
             threading.Thread(target=self.on_open_settings, daemon=True).start()
 
-    def _handle_quit(self, icon, item):
+    def _toggle_sound(self, icon, item):
+        update_config(sound_enabled=not load_config().get("sound_enabled", True))
+        self.refresh()
+
+    def _toggle_autostart(self, icon, item):
+        new_val = not is_auto_start_enabled()
+        set_auto_start(new_val)
+        update_config(auto_start=new_val)
+        self.refresh()
+
+    def _quit(self, icon, item):
         self.stop()
         if self.on_quit:
             self.on_quit()
 
     def _switch_model(self, profile):
-        self.config = load_config()
-        self.config["model_profile"] = profile
-        save_config(self.config)
-        try:
-            from engine import get_default_engine
-            eng = get_default_engine(model_profile=profile)
-            threading.Thread(target=eng.start, daemon=True).start()
-        except Exception as e:
-            print(f"Tray model switch notice: {e}")
-        if self.icon:
-            self.icon.menu = self.build_menu()
+        if resolve_model(profile) is None:
+            self._open()  # not downloaded yet: the dashboard's Model tab handles that
+            return
+        if self.on_switch_model:
+            self.on_switch_model(profile)
+        self.refresh()
+
+    # -- menu ----------------------------------------------------------------
+
+    def _status_text(self, _item=None):
+        st = self.get_status() or {}
+        text = _STATE_TEXT.get(st.get("state"), "Ready")
+        backend = st.get("backend")
+        return f"Fixelect — {text}" + (f" ({backend})" if backend and st.get("state") == "ready" else "")
+
+    def _model_items(self):
+        for key, spec in MODELS.items():
+            ready = resolve_model(key) is not None
+            label = spec["short_name"] + ("" if ready else "  (download…)")
+            yield pystray.MenuItem(
+                label,
+                (lambda k: (lambda icon, item: self._switch_model(k)))(key),
+                checked=(lambda k: (lambda item: load_config().get("model_profile", "3b") == k))(key),
+                radio=True,
+            )
 
     def build_menu(self):
         if not pystray:
             return None
-
-        self.config = load_config()
-        curr_profile = self.config.get("model_profile", self.hw.get("recommended_model", "3b"))
-
-        device_desc = self.hw["backend"].upper()
-        if self.hw["backend"] == "cuda":
-            device_desc = "CUDA GPU"
-        elif self.hw["backend"] == "vulkan":
-            device_desc = "Vulkan"
-        else:
-            device_desc = "CPU"
-
-        # Construct dynamic model switching submenu
-        model_items = []
-        for p_key, p_spec in MODELS.items():
-            is_active = (p_key == curr_profile)
-            is_ready = resolve_model(p_key) is not None
-
-            tag = ""
-            if not is_ready:
-                tag = " [Download Needed]"
-            elif p_key == self.hw.get("recommended_model"):
-                tag = " (Recommended)"
-
-            display_name = f"{p_spec['short_name']}{tag}"
-
-            def make_handler(pk=p_key, ready=is_ready):
-                def handler(icon, item):
-                    if ready:
-                        self._switch_model(pk)
-                    else:
-                        self._handle_open_settings()
-                return handler
-
-            model_items.append(
-                pystray.MenuItem(
-                    display_name,
-                    make_handler(),
-                    checked=lambda item, active=is_active: active,
-                    radio=True,
-                )
-            )
-
-        model_submenu = pystray.Menu(*model_items)
-
+        M = pystray.MenuItem
         return pystray.Menu(
-            pystray.MenuItem(f"Fixelect: Active ({device_desc})", None, enabled=False),
+            M(self._status_text, None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Default Fix: Ctrl + Alt + F", None, enabled=False),
-            pystray.MenuItem("Professional Polish: Ctrl + Alt + P", None, enabled=False),
+            M(lambda item: f"Fix selected text\t{get_hotkey_label('fix')}", None, enabled=False),
+            M(lambda item: f"Polish selected text\t{get_hotkey_label('polish')}", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Switch AI Model", model_submenu),
-            pystray.MenuItem("Dashboard & Settings...", self._handle_open_settings, default=True),
+            M("Open Fixelect", self._open, default=True),
+            M("Model", pystray.Menu(self._model_items)),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem(
-                "Sound Feedback",
-                self._toggle_sound,
-                checked=lambda item: self.config.get("sound_enabled", True),
-            ),
-            pystray.MenuItem(
-                "Start with Windows",
-                self._toggle_autostart,
-                checked=lambda item: is_auto_start_enabled(),
-            ),
+            M("Sound feedback", self._toggle_sound,
+              checked=lambda item: load_config().get("sound_enabled", True)),
+            M("Start with Windows", self._toggle_autostart,
+              checked=lambda item: is_auto_start_enabled()),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Exit Fixelect (Ctrl + Alt + Q)", self._handle_quit),
+            M("Quit Fixelect", self._quit),
         )
 
+    def refresh(self):
+        """Rebuild the native menu and tooltip so they reflect current state."""
+        if not self.icon:
+            return
+        try:
+            self.icon.title = self._status_text()
+            self.icon.update_menu()
+        except Exception:
+            pass
+
     def start(self):
-        """Start tray icon in background thread."""
         if not pystray:
             print("  (pystray not installed; system tray unavailable)")
             return
-
-        icon_image = create_tray_icon(64, active=True)
-        menu = self.build_menu()
-
-        self.icon = pystray.Icon(
-            "Fixelect",
-            icon_image,
-            "Fixelect - AI Offline Grammar & Polish",
-            menu=menu,
-        )
+        self.icon = pystray.Icon("Fixelect", create_tray_icon(64), self._status_text(), menu=self.build_menu())
 
         def run_tray():
             try:
@@ -228,7 +165,6 @@ class TrayManager:
         self._thread.start()
 
     def notify(self, title, message):
-        """Display a native Windows notification from the tray."""
         if self.icon:
             try:
                 self.icon.notify(message, title)
@@ -236,7 +172,6 @@ class TrayManager:
                 pass
 
     def stop(self):
-        """Stop and remove the tray icon."""
         if self.icon:
             try:
                 self.icon.stop()

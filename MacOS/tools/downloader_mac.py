@@ -8,7 +8,9 @@ import os
 import pathlib
 import shutil
 import sys
+import subprocess
 import time
+import urllib.error
 import urllib.request
 
 from config_mac import get_models_dir, get_config_dir
@@ -143,84 +145,83 @@ def resolve_model(profile: str = "3b") -> pathlib.Path | None:
     return None
 
 
+class DownloadCancelled(Exception):
+    pass
+
+
+def _friendly_network_error(e):
+    text = str(getattr(e, "reason", e))
+    if "nodename" in text or "Name or service" in text or "getaddrinfo" in text:
+        return "No internet connection. Check your network and try again."
+    if "timed out" in text:
+        return "The download server stopped responding. Try again."
+    if isinstance(e, urllib.error.HTTPError):
+        return f"Download server returned HTTP {e.code}. Try again later."
+    return f"Download failed: {text}"
+
+
 def download_model(profile: str = "3b", progress_callback=None, cancel_event=None) -> pathlib.Path:
-    """
-    Download model GGUF from Hugging Face with progress callbacks.
-    Streams to .part file, then atomically renames upon verification.
-    """
+    """Download a model with resume support. The file is only moved into place
+    once every byte has arrived - a truncated model used to be kept forever."""
     spec = MODELS.get(profile)
     if not spec:
         raise ValueError(f"Unknown model profile: {profile}")
-
-    url = spec["url"]
-    filename = spec["filename"]
-    expected_size = spec["size_bytes"]
-
     models_dir = get_models_dir()
-    final_path = models_dir / filename
-    part_path = models_dir / f"{filename}.part"
+    final_path = models_dir / spec["filename"]
+    part_path = models_dir / f"{spec['filename']}.part"
 
-    # If already downloaded and valid
-    if final_path.is_file() and final_path.stat().st_size >= expected_size * 0.98:
-        if progress_callback:
-            progress_callback(expected_size, expected_size, 0)
-        return final_path
+    existing = resolve_model(profile)
+    if existing:
+        return existing
 
-    # Check if Ollama already has it to avoid downloading twice
-    ollama_model = find_ollama_mac_model(profile)
-    if ollama_model and ollama_model.is_file():
-        try:
-            os.symlink(ollama_model, final_path)
-            return final_path
-        except Exception:
-            shutil.copyfile(ollama_model, final_path)
-            return final_path
+    free = shutil.disk_usage(models_dir).free
+    if free < spec["size_bytes"] + 200 * 1024 * 1024:
+        raise OSError(f"Not enough disk space: {spec['badge_size']} needed, {free / 1024 ** 3:.1f} GB free.")
 
+    start_byte = part_path.stat().st_size if part_path.is_file() else 0
     headers = {"User-Agent": "Fixelect-macOS/1.0"}
-    req = urllib.request.Request(url, headers=headers)
+    if start_byte:
+        headers["Range"] = f"bytes={start_byte}-"
+    try:
+        response = urllib.request.urlopen(urllib.request.Request(spec["url"], headers=headers), timeout=30)
+    except urllib.error.HTTPError as e:
+        if e.code == 416 and start_byte:
+            part_path.unlink(missing_ok=True)
+            return download_model(profile, progress_callback, cancel_event)
+        raise RuntimeError(_friendly_network_error(e)) from e
+    except Exception as e:
+        raise RuntimeError(_friendly_network_error(e)) from e
 
-    start_byte = 0
-    if part_path.is_file():
-        start_byte = part_path.stat().st_size
-        if start_byte < expected_size:
-            req.headers["Range"] = f"bytes={start_byte}-"
-        else:
+    with response:
+        if start_byte and response.status != 206:
             start_byte = 0
+        length = response.headers.get("Content-Length")
+        total = (int(length) + start_byte) if length else spec["size_bytes"]
+        downloaded, t0, last = start_byte, time.time(), 0.0
+        try:
+            with open(part_path, "ab" if start_byte else "wb") as f:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise DownloadCancelled("Download cancelled.")
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    now = time.time()
+                    if progress_callback and now - last >= 0.1:
+                        last = now
+                        progress_callback(downloaded, total, (downloaded - start_byte) / max(1e-6, now - t0))
+        except DownloadCancelled:
+            raise
+        except Exception as e:
+            raise RuntimeError(_friendly_network_error(e) + " Progress was saved; retry to resume.") from e
 
-    mode = "ab" if start_byte > 0 else "wb"
-    downloaded = start_byte
-    t_start = time.time()
-    t_last = t_start
-    bytes_last = downloaded
-
-    with urllib.request.urlopen(req, timeout=30) as response:
-        total_size = expected_size
-        with open(part_path, mode) as f:
-            while True:
-                if cancel_event and cancel_event.is_set():
-                    raise InterruptedError("Download cancelled by user.")
-
-                chunk = response.read(64 * 1024)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-
-                now = time.time()
-                if now - t_last >= 0.25:
-                    speed = (downloaded - bytes_last) / (now - t_last)
-                    t_last = now
-                    bytes_last = downloaded
-                    if progress_callback:
-                        progress_callback(downloaded, total_size, speed)
-
-    # Atomically rename .part to final file
-    if part_path.is_file():
-        part_path.replace(final_path)
-
+    if length and downloaded < total:
+        raise RuntimeError("Download was interrupted. Retry to resume where it stopped.")
+    os.replace(part_path, final_path)
     if progress_callback:
-        progress_callback(expected_size, expected_size, 0)
-
+        progress_callback(total, total, 0)
     return final_path
 
 
@@ -232,54 +233,44 @@ def get_bin_dir() -> pathlib.Path:
 
 
 def fetch_metal_engine(progress_callback=None) -> pathlib.Path | None:
-    """
-    Download standalone llama-server Metal binary for macOS if not already present.
-    Installs into ~/Library/Application Support/Fixelect/bin/llama-server.
-    """
+    """Download the llama.cpp Metal build once into Application Support/Fixelect/bin.
+
+    The whole archive is extracted so llama-server keeps its libggml/libllama
+    dylibs next to it (moving the binary alone broke its @rpath lookups)."""
     bin_dir = get_bin_dir()
-    target = bin_dir / "llama-server"
-    if target.is_file() and os.access(target, os.X_OK):
-        return target
+    for existing in sorted(bin_dir.rglob("llama-server")):
+        if existing.is_file() and os.access(existing, os.X_OK):
+            return existing
 
-    # Official upstream release asset for llama.cpp macOS Metal binary
-    url = "https://github.com/ggerganov/llama.cpp/releases/download/b4600/llama-b4600-bin-macos-arm64.zip"
+    url = "https://github.com/ggml-org/llama.cpp/releases/download/b4600/llama-b4600-bin-macos-arm64.zip"
     zip_path = bin_dir / "llama_metal.zip"
-
+    dest = bin_dir / "llama.cpp"
     try:
         import zipfile
         req = urllib.request.Request(url, headers={"User-Agent": "Fixelect-macOS/1.0"})
-        with urllib.request.urlopen(req, timeout=40) as resp, open(zip_path, "wb") as out:
-            total = int(resp.headers.get("Content-Length", 25_000_000))
-            downloaded = 0
+        with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as out:
+            total = int(resp.headers.get("Content-Length", 0) or 0)
+            done = 0
             while True:
-                chunk = resp.read(64 * 1024)
+                chunk = resp.read(256 * 1024)
                 if not chunk:
                     break
                 out.write(chunk)
-                downloaded += len(chunk)
+                done += len(chunk)
                 if progress_callback:
-                    progress_callback(downloaded, total)
-
-        # Extract llama-server and supporting Metal libraries
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            for item in zf.namelist():
-                if item.endswith("llama-server") or item.endswith(".metal") or item.endswith(".dylib"):
-                    zf.extract(item, bin_dir)
-                    extracted = bin_dir / item
-                    if extracted.name == "llama-server":
-                        if extracted != target:
-                            extracted.replace(target)
-                        os.chmod(target, 0o755)
-
-        try:
-            zip_path.unlink()
-        except Exception:
-            pass
-
-        if target.is_file():
-            os.chmod(target, 0o755)
-            return target
+                    progress_callback(done, total or done)
+        shutil.rmtree(dest, ignore_errors=True)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(dest)
+        zip_path.unlink(missing_ok=True)
+        server = None
+        for p in dest.rglob("*"):
+            if p.is_file() and (p.name.startswith("llama-") or p.suffix == ".dylib"):
+                os.chmod(p, 0o755)
+            if p.name == "llama-server":
+                server = p
+        subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(dest)], capture_output=True)
+        return server
     except Exception as e:
-        print(f"Failed to auto-fetch Metal engine: {e}")
-
-    return None
+        print(f"Failed to fetch the Metal engine: {e}")
+        return None

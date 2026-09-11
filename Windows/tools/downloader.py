@@ -8,6 +8,7 @@ import pathlib
 import shutil
 import sys
 import time
+import urllib.error
 import urllib.request
 
 MODELS = {
@@ -151,79 +152,105 @@ def resolve_model(profile="3b"):
     return None
 
 
-def download_model(profile="3b", progress_callback=None):
+class DownloadCancelled(Exception):
+    pass
+
+
+def _friendly_network_error(e):
+    text = str(getattr(e, "reason", e))
+    if "getaddrinfo" in text or "Name or service" in text or "nodename" in text:
+        return "No internet connection. Check your network and try again."
+    if "timed out" in text:
+        return "The download server stopped responding. Try again."
+    if isinstance(e, urllib.error.HTTPError):
+        return f"Download server returned HTTP {e.code}. Try again later."
+    return f"Download failed: {text}"
+
+
+def download_model(profile="3b", progress_callback=None, cancel_event=None):
     """
-    Download the GGUF model from Hugging Face with progress tracking and resume support.
+    Download the GGUF model from Hugging Face with progress, resume and verification.
+
+    The file is only moved into place once every byte announced by the server
+    has arrived - an interrupted download used to be renamed to the final name,
+    after which llama-server failed on the truncated file forever.
     """
     spec = MODELS.get(profile) or MODELS["3b"]
-    target_path = get_models_dir() / spec["filename"]
-    part_path = get_models_dir() / f"{spec['filename']}.part"
+    models_dir = get_models_dir()
+    target_path = models_dir / spec["filename"]
+    part_path = models_dir / f"{spec['filename']}.part"
 
-    # Quick check if already resolvable
     existing = resolve_model(profile)
     if existing:
         return existing
 
-    url = spec["url"]
-    print(f"\nDownloading {spec['filename']} (~{spec['approx_mb']} MB) from Hugging Face...")
-    print(f"Destination: {target_path}\n")
-
-    initial_bytes = 0
-    headers = {"User-Agent": "Fixelect-Desktop/1.0"}
-    if part_path.exists():
-        initial_bytes = part_path.stat().st_size
-        headers["Range"] = f"bytes={initial_bytes}-"
-        print(f"Resuming download from byte {initial_bytes:,}...")
-
-    req = urllib.request.Request(url, headers=headers)
-    chunk_size = 1024 * 1024  # 1 MB chunks
-    start_time = time.time()
-    downloaded = initial_bytes
-
-    mode = "ab" if initial_bytes > 0 else "wb"
     try:
-        with urllib.request.urlopen(req, timeout=30) as response, open(part_path, mode) as out_f:
-            total_size = response.headers.get("Content-Length")
-            if total_size:
-                total_bytes = int(total_size) + initial_bytes
-            else:
-                total_bytes = spec["size_bytes"]
+        free = shutil.disk_usage(models_dir).free
+        needed = spec["size_bytes"] - (part_path.stat().st_size if part_path.exists() else 0)
+        if free < needed + 200 * 1024 * 1024:
+            raise OSError(
+                f"Not enough disk space: {spec['badge_size']} needed, "
+                f"{free / (1024 ** 3):.1f} GB free on this drive."
+            )
+    except OSError as e:
+        if "disk space" in str(e):
+            raise
 
-            while True:
-                chunk = response.read(chunk_size)
-                if not chunk:
-                    break
-                out_f.write(chunk)
-                downloaded += len(chunk)
+    initial_bytes = part_path.stat().st_size if part_path.exists() else 0
+    headers = {"User-Agent": "Fixelect-Desktop/1.0"}
+    if initial_bytes:
+        headers["Range"] = f"bytes={initial_bytes}-"
 
-                elapsed = time.time() - start_time
-                speed = (downloaded - initial_bytes) / elapsed if elapsed > 0 else 0
-                pct = (downloaded / total_bytes * 100) if total_bytes else 0
-                eta = (total_bytes - downloaded) / speed if speed > 0 and total_bytes else 0
-
-                bar_len = 30
-                filled = int(bar_len * (pct / 100))
-                bar = "=" * filled + ">" + " " * max(0, bar_len - filled - 1)
-
-                status = (
-                    f"\r[{bar[:bar_len]}] {pct:5.1f}% | "
-                    f"{downloaded / (1024*1024):.1f}/{total_bytes / (1024*1024):.1f} MB | "
-                    f"{speed / (1024*1024):.1f} MB/s | ETA: {eta:.0f}s"
-                )
-                sys.stdout.write(status)
-                sys.stdout.flush()
-
-                if progress_callback:
-                    progress_callback(downloaded, total_bytes, speed)
-
-        # Move part file to final file
-        if part_path.exists():
-            shutil.move(str(part_path), str(target_path))
-        print(f"\nModel successfully saved to: {target_path}\n")
-        return target_path
+    req = urllib.request.Request(spec["url"], headers=headers)
+    chunk_size = 1024 * 1024
+    try:
+        response = urllib.request.urlopen(req, timeout=30)
+    except urllib.error.HTTPError as e:
+        if e.code == 416 and initial_bytes:  # stale/complete partial: start over
+            part_path.unlink(missing_ok=True)
+            return download_model(profile, progress_callback, cancel_event)
+        raise RuntimeError(_friendly_network_error(e)) from e
     except Exception as e:
-        print(f"\nDownload error: {e}")
-        raise
+        raise RuntimeError(_friendly_network_error(e)) from e
+
+    with response:
+        if initial_bytes and response.status != 206:
+            initial_bytes = 0  # server ignored Range: appending would corrupt the file
+        length = response.headers.get("Content-Length")
+        total_bytes = (int(length) + initial_bytes) if length else spec["size_bytes"]
+
+        downloaded = initial_bytes
+        started, last_cb = time.time(), 0.0
+        try:
+            with open(part_path, "ab" if initial_bytes else "wb") as out_f:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise DownloadCancelled("Download cancelled.")
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    out_f.write(chunk)
+                    downloaded += len(chunk)
+                    now = time.time()
+                    if progress_callback and (now - last_cb >= 0.1):
+                        last_cb = now
+                        elapsed = max(1e-6, now - started)
+                        progress_callback(downloaded, total_bytes, (downloaded - initial_bytes) / elapsed)
+        except DownloadCancelled:
+            raise
+        except Exception as e:
+            raise RuntimeError(_friendly_network_error(e) + " Progress was saved; retry to resume.") from e
+
+    if length and downloaded < total_bytes:
+        raise RuntimeError("Download was interrupted. Retry to resume where it stopped.")
+    if downloaded < 100 * 1024 * 1024:
+        part_path.unlink(missing_ok=True)
+        raise RuntimeError("The downloaded file is invalid. Please try again.")
+
+    os.replace(part_path, target_path)
+    if progress_callback:
+        progress_callback(total_bytes, total_bytes, 0)
+    return target_path
 
 
 if __name__ == "__main__":

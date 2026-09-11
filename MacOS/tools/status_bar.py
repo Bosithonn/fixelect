@@ -1,132 +1,109 @@
 """
-macOS Menu Bar Extra (Status Item) for Fixelect.
-Renders an adaptive native Menu Bar item using PyObjC (NSStatusBar) or rumps.
-Provides instant mode switching, hardware specs, preferences, and quick links.
+macOS menu bar item for Fixelect (rumps).
+
+Runs on the MAIN thread (Cocoa requires it; the old version started rumps on a
+background thread, where the icon either never appeared or crashed the app).
+A one-second timer refreshes the labels and gives Python a chance to handle
+signals (SIGTERM from the Dashboard's Quit, SIGUSR1 from a second launch).
 """
 
-import pathlib
-import sys
-import threading
+import time
+
 from config_mac import get_resource_path, load_config, get_hotkey_label
+from downloader_mac import MODELS
+
+_STATE = {"loading": "Loading model…", "ready": "Ready", "busy": "Working…", "error": "Engine offline"}
 
 
 class MacStatusBar:
-    """
-    macOS Menu Bar controller.
-    Uses native AppKit.NSStatusBar when available, or rumps as an alternative.
-    """
-
-    def __init__(self, on_open_dashboard=None, on_open_setup=None, on_open_words=None, on_quit=None):
+    def __init__(self, on_open_dashboard=None, on_quit=None, get_status=None, want_dashboard=None, **_legacy):
         self.on_open_dashboard = on_open_dashboard
-        self.on_open_setup = on_open_setup
-        self.on_open_words = on_open_words
         self.on_quit = on_quit
-        self._running = False
+        self.get_status = get_status or (lambda: {"state": "ready"})
+        self.want_dashboard = want_dashboard
         self._app = None
 
-    def start(self):
-        """Start the status bar item in background thread or main loop."""
-        self._running = True
+    def _status_title(self):
+        st = self.get_status() or {}
+        model = MODELS.get(st.get("model") or load_config().get("model_profile", ""), {}).get("short_name", "")
+        text = _STATE.get(st.get("state"), "Ready")
+        return f"Fixelect — {text}" + (f"  ·  {model}" if model and st.get("state") == "ready" else "")
 
-        cfg = load_config()
-        fix_lbl = get_hotkey_label("fix", cfg)
-        pol_lbl = get_hotkey_label("polish", cfg)
-
-        # 1. Try rumps if available
+    def run(self):
         try:
             import rumps
-
-            icon_path = get_resource_path("resources/status_bar_template.png")
-
-            class FixelectRumpsApp(rumps.App):
-                def __init__(self, parent):
-                    super().__init__("Fixelect", icon=str(icon_path) if icon_path.is_file() else None, template=True)
-                    self.parent = parent
-                    self.menu = [
-                        rumps.MenuItem("Fixelect: Active (Metal)", callback=None),
-                        None,  # Separator
-                        rumps.MenuItem(f"Fix Mode  ({fix_lbl})", callback=None),
-                        rumps.MenuItem(f"Polish Mode  ({pol_lbl})", callback=None),
-                        None,
-                        rumps.MenuItem("Open Dashboard & Playground...", callback=self.open_dashboard),
-                        rumps.MenuItem("Model & Hardware Setup...", callback=self.open_setup),
-                        rumps.MenuItem("Protected Words & Whitelist...", callback=self.open_words),
-                        None,
-                        rumps.MenuItem("Quit Fixelect", callback=self.quit_app),
-                    ]
-
-                def open_dashboard(self, _):
-                    if self.parent.on_open_dashboard:
-                        self.parent.on_open_dashboard()
-
-                def open_setup(self, _):
-                    if self.parent.on_open_setup:
-                        self.parent.on_open_setup()
-
-                def open_words(self, _):
-                    if self.parent.on_open_words:
-                        self.parent.on_open_words()
-
-                def quit_app(self, _):
-                    if self.parent.on_quit:
-                        self.parent.on_quit()
-
-            self._app = FixelectRumpsApp(self)
-            threading.Thread(target=self._app.run, daemon=True).start()
-            return True
-
         except ImportError:
+            print("  [StatusBar] rumps not installed - running headless (Ctrl+C to quit).")
+            try:
+                while True:
+                    time.sleep(0.5)
+                    if self.want_dashboard is not None and self.want_dashboard.is_set():
+                        self.want_dashboard.clear()
+                        self.on_open_dashboard and self.on_open_dashboard()
+            except KeyboardInterrupt:
+                pass
+            return
+
+        bar = self
+        self._install_reopen_handler(rumps)
+
+        icon = get_resource_path("resources/status_bar_template.png")
+
+        class App(rumps.App):
+            def __init__(self):
+                super().__init__("Fixelect", icon=str(icon) if icon.is_file() else None,
+                                 template=True, quit_button=None)
+                if not icon.is_file():
+                    self.title = "Fx"
+                self.i_status = rumps.MenuItem(bar._status_title())
+                self.i_fix = rumps.MenuItem("")
+                self.i_pol = rumps.MenuItem("")
+                self.menu = [
+                    self.i_status, None,
+                    self.i_fix, self.i_pol, None,
+                    rumps.MenuItem("Open Fixelect…", callback=lambda _: bar.on_open_dashboard and bar.on_open_dashboard(),
+                                   key=","),
+                    None,
+                    rumps.MenuItem("Quit Fixelect", callback=lambda _: bar.on_quit and bar.on_quit(), key="q"),
+                ]
+                self.refresh()
+                rumps.Timer(self._tick, 1).start()
+
+            def refresh(self):
+                cfg = load_config()
+                self.i_status.title = bar._status_title()
+                self.i_fix.title = f"Fix selected text      {get_hotkey_label('fix', cfg)}"
+                self.i_pol.title = f"Polish selected text   {get_hotkey_label('polish', cfg)}"
+
+            def _tick(self, _timer):
+                self.refresh()
+                if bar.want_dashboard is not None and bar.want_dashboard.is_set():
+                    bar.want_dashboard.clear()
+                    bar.on_open_dashboard and bar.on_open_dashboard()
+
+        self._app = App()
+        self._app.run()
+
+    def _install_reopen_handler(self, rumps):
+        """Clicking Fixelect in Finder/Launchpad while it runs opens the dashboard."""
+        try:
+            from rumps import rumps as core
+            base = core.NSApp
+            bar = self
+
+            class FixelectNSApp(base):
+                def applicationShouldHandleReopen_hasVisibleWindows_(self, app, flag):
+                    if bar.on_open_dashboard:
+                        bar.on_open_dashboard()
+                    return True
+
+            core.NSApp = FixelectNSApp
+        except Exception:
             pass
 
-        # 2. Try native PyObjC AppKit
-        if sys.platform == "darwin":
-            try:
-                from AppKit import (
-                    NSStatusBar,
-                    NSVariableStatusItemLength,
-                    NSMenu,
-                    NSMenuItem,
-                    NSImage,
-                )
-
-                status_bar = NSStatusBar.systemStatusBar()
-                self._status_item = status_bar.statusItemWithLength_(NSVariableStatusItemLength)
-
-                icon_path = get_resource_path("resources/status_bar_template.png")
-                if icon_path.is_file():
-                    img = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
-                    if img:
-                        img.setTemplate_(True)
-                        self._status_item.button().setImage_(img)
-                else:
-                    self._status_item.button().setTitle_("Fixelect")
-
-                menu = NSMenu.alloc().init()
-
-                item_status = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Fixelect: Active (Metal)", None, "")
-                menu.addItem_(item_status)
-                menu.addItem_(NSMenuItem.separatorItem())
-
-                def _add_action(title, callback):
-                    item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, "action:", "")
-                    menu.addItem_(item)
-                    return item
-
-                _add_action("Open Dashboard...", lambda _: self.on_open_dashboard() if self.on_open_dashboard else None)
-                _add_action("Model Setup...", lambda _: self.on_open_setup() if self.on_open_setup else None)
-                _add_action("Protected Words...", lambda _: self.on_open_words() if self.on_open_words else None)
-                menu.addItem_(NSMenuItem.separatorItem())
-                _add_action("Quit Fixelect", lambda _: self.on_quit() if self.on_quit else None)
-
-                self._status_item.setMenu_(menu)
-                return True
-
-            except Exception:
-                pass
-
-        # 3. Headless / CLI fallback
-        print("  [StatusBar] Running without native menu bar icon (CLI fallback).")
-        return True
-
     def stop(self):
-        self._running = False
+        try:
+            import rumps
+            rumps.quit_application()
+        except Exception:
+            pass

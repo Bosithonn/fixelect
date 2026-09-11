@@ -19,7 +19,7 @@
      Effortless 1-finger activation. Fixes typos, mis-keys, and grammar instantly while preserving 100% of your voice and jargon.
    - **Professional Polish Mode**: **Double-tap Control (`⌃ ⌃`)**
      Transforms rough notes into articulate, executive prose with smooth transitions and active voice.
-   - **Quit Fixelect**: `Cmd (⌘) + Option (⌥) + Q`
+   - **Quit Fixelect**: from the menu bar icon (a global ⌘⌥Q would also quit the app you are typing in)
    - **Full Customization**: Choose between Double-Tap, `Option + Space`, Classic 3-Key (`⌥⌘F`), or define your own custom shortcuts directly inside the Dashboard!
 
 3. **Menu Bar Extra Item**:
@@ -63,7 +63,7 @@ python3 fixelect_mac.py -p "rough draft"   # Direct CLI polish
 
 ## 🔐 macOS Accessibility Permissions
 
-To intercept global hotkeys (`⌥⌘F` / `⌥⌘P`) and automatically paste corrected text into your active app, macOS requires Accessibility authorization:
+To detect the double-tap triggers and automatically paste corrected text into your active app, macOS requires Accessibility authorization:
 
 1. When first launched, macOS displays a prompt: *"Fixelect would like to control this computer using accessibility features."*
 2. Click **Open System Settings**.

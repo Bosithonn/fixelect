@@ -1,261 +1,186 @@
 """
-Windows Global Hotkey Dispatcher and Trigger Manager for Fixelect.
-Supports:
-- Default Double-Tap Modifiers:
-    Alt x2 (Alt Alt)   -> Default Fix Mode (Effortless 1-hand thumb trigger)
-    Ctrl x2 (Ctrl Ctrl) -> Professional Polish Mode
-- Alt + Space preset (Alt+Space Fix / Alt+Shift+Space Polish)
-- Classic 3-Key preset (Ctrl+Alt+F Fix / Ctrl+Alt+P Polish / Ctrl+Alt+Q Quit)
-- Fully customizable user shortcuts
-- Non-blocking background listener with live config reloading
+Double-tap modifier detection for Fixelect on Windows.
+
+    Alt  x2  -> Fix
+    Ctrl x2  -> Polish
+
+Only the double-tap trigger needs a low-level keyboard hook. Every key
+*combination* (Alt+Space, Ctrl+Alt+F, custom shortcuts, Ctrl+Alt+Q) is
+registered with Win32 RegisterHotKey by the main thread instead, which
+swallows the keystroke and cannot fire twice. Running pynput for those too
+made every combo trigger two jobs, and in editors that copy the whole line on
+an empty Ctrl+C the second job duplicated the line into the document.
 """
 
-import sys
 import threading
 import time
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 try:
     from pynput import keyboard
     _has_pynput = True
 except ImportError:
+    keyboard = None
     _has_pynput = False
 
-# Import config helpers
 try:
     from config import load_config
-except ImportError:
+except ImportError:  # pragma: no cover
     def load_config():
-        return {
-            "trigger_mode": "double_tap",
-            "hotkey_fix": "double_alt",
-            "hotkey_polish": "double_control",
-            "custom_fix": "<ctrl>+<alt>+f",
-            "custom_polish": "<ctrl>+<alt>+p",
-        }
+        return {"trigger_mode": "double_tap"}
+
+_ALT_VKS = {18, 164, 165}
+_CTRL_VKS = {17, 162, 163}
+
+
+class _Tap:
+    """State for one modifier: pressed alone, released quickly, twice in a row."""
+
+    __slots__ = ("down_at", "spoiled", "last_tap_at")
+
+    def __init__(self):
+        self.down_at = 0.0
+        self.spoiled = False
+        self.last_tap_at = 0.0
+
+    def reset(self):
+        self.down_at = 0.0
+        self.spoiled = False
+        self.last_tap_at = 0.0
 
 
 class WinHotkeyListener:
-    """
-    Background global hotkey dispatcher for Windows.
-    Supports double-tap modifiers (Alt x2, Ctrl x2) as well as
-    standard hotkey combinations and custom user-defined shortcuts.
-    """
+    DOUBLE_TAP_MAX_INTERVAL = 0.45  # seconds between the two releases
+    TAP_MAX_HOLD = 0.35             # longer than this is a hold, not a tap
+    STALE_PRESS = 2.0               # a press this old means we missed its release
 
-    DOUBLE_TAP_MAX_INTERVAL = 0.55  # max seconds between consecutive taps
-    TAP_MAX_HOLD = 0.45             # max duration a modifier can be held to count as a tap
-
-    def __init__(self, on_fix: Callable, on_polish: Callable, on_quit: Optional[Callable] = None, config: Optional[dict] = None):
+    def __init__(self, on_fix: Callable, on_polish: Callable,
+                 on_quit: Optional[Callable] = None, config: Optional[dict] = None):
         self.on_fix = on_fix
         self.on_polish = on_polish
-        self.on_quit = on_quit
+        self.on_quit = on_quit  # Ctrl+Alt+Q is handled by RegisterHotKey; kept for API compatibility
         self.config = config or load_config()
         self.listener = None
-        self._running = False
         self._lock = threading.RLock()
+        self._suspended = False
+        self._alt = _Tap()
+        self._ctrl = _Tap()
 
-        # Double-tap tracking state
-        self._alt_press_time = 0.0
-        self._last_alt_release_time = 0.0
-        self._alt_invalidated = False
-
-        self._ctrl_press_time = 0.0
-        self._last_ctrl_release_time = 0.0
-        self._ctrl_invalidated = False
+    # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> bool:
-        if not _has_pynput:
-            print("  ! warning: pynput module not installed. Global hotkeys unavailable.")
-            return False
         with self._lock:
-            return self._start_listener_unlocked()
+            return self._start_unlocked()
 
     def stop(self):
         with self._lock:
             self._stop_unlocked()
 
+    def reload(self, new_config: Optional[dict] = None) -> bool:
+        with self._lock:
+            self._stop_unlocked()
+            self.config = new_config or load_config()
+            return self._start_unlocked()
+
+    def suspend(self, flag: bool):
+        """Ignore taps while the user is recording a shortcut in the dashboard."""
+        self._suspended = bool(flag)
+        self._alt.reset()
+        self._ctrl.reset()
+
+    @property
+    def active(self) -> bool:
+        return self.listener is not None
+
+    def _start_unlocked(self) -> bool:
+        if self.config.get("trigger_mode", "double_tap") != "double_tap":
+            return True  # combos are RegisterHotKey's job
+        if not _has_pynput:
+            print("  ! pynput not installed - double-tap triggers unavailable")
+            return False
+        try:
+            self._alt.reset()
+            self._ctrl.reset()
+            self.listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
+            self.listener.daemon = True
+            self.listener.start()
+            return True
+        except Exception as e:
+            print(f"  ! could not start double-tap listener: {e}")
+            self.listener = None
+            return False
+
     def _stop_unlocked(self):
-        if self.listener:
+        if self.listener is not None:
             try:
                 self.listener.stop()
             except Exception:
                 pass
             self.listener = None
-        self._running = False
-        self._active_keys.clear()
 
-    def reload(self, new_config: Optional[dict] = None) -> bool:
-        """Dynamically reload hotkeys with updated configuration without restarting daemon."""
-        with self._lock:
-            self._stop_unlocked()
-            if new_config:
-                self.config = new_config
-            else:
-                self.config = load_config()
-            return self._start_listener_unlocked()
-
-    def _start_listener_unlocked(self) -> bool:
-        trigger_mode = self.config.get("trigger_mode", "double_tap")
-
-        try:
-            if trigger_mode == "double_tap":
-                self.listener = keyboard.Listener(
-                    on_press=self._on_dt_press,
-                    on_release=self._on_dt_release
-                )
-                self.listener.start()
-                self._running = True
-                return True
-            else:
-                hotkey_map = {}
-                if trigger_mode == "alt_space":
-                    hotkey_map["<alt>+<space>"] = self._handle_fix
-                    hotkey_map["<alt>+<shift>+<space>"] = self._handle_polish
-                elif trigger_mode == "classic":
-                    hotkey_map["<ctrl>+<alt>+f"] = self._handle_fix
-                    hotkey_map["<ctrl>+<alt>+p"] = self._handle_polish
-                elif trigger_mode == "custom":
-                    fix_key = self._normalize_combo(self.config.get("custom_fix", "Ctrl+Alt+F"))
-                    pol_key = self._normalize_combo(self.config.get("custom_polish", "Ctrl+Alt+P"))
-                    if fix_key:
-                        hotkey_map[fix_key] = self._handle_fix
-                    if pol_key:
-                        hotkey_map[pol_key] = self._handle_polish
-
-                if self.on_quit:
-                    hotkey_map["<ctrl>+<alt>+q"] = self._handle_quit
-
-                if hotkey_map:
-                    self.listener = keyboard.GlobalHotKeys(hotkey_map)
-                    self.listener.start()
-                    self._running = True
-                return True
-
-        except Exception as e:
-            print(f"  ! Error starting Windows hotkey listener ({trigger_mode}): {e}")
-            return False
+    # -- key classification --------------------------------------------------
 
     @staticmethod
-    def _normalize_combo(combo: str) -> str:
-        """Convert friendly shortcut strings like 'Ctrl+Alt+F' into pynput format."""
-        if not combo:
-            return ""
-        s = combo.strip().lower()
-        replacements = [
-            ("control", "<ctrl>"),
-            ("ctrl", "<ctrl>"),
-            ("alt", "<alt>"),
-            ("shift", "<shift>"),
-            ("space", "<space>"),
-            ("win", "<cmd>"),
-            ("windows", "<cmd>"),
-            ("cmd", "<cmd>"),
-        ]
-        tokens = [t.strip() for t in s.split("+") if t.strip()]
-        out = []
-        for t in tokens:
-            t_clean = t.strip("<>")
-            matched = False
-            for src, dst in replacements:
-                if t_clean == src or t == dst:
-                    out.append(dst)
-                    matched = True
-                    break
-            if not matched:
-                out.append(t_clean)
-        return "+".join(out)
-
-
-    def _is_alt_key(self, key) -> bool:
-        if _has_pynput and (key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr)):
-            return True
-        name = getattr(key, "name", "")
-        if name in ("alt", "alt_l", "alt_r", "alt_gr"):
-            return True
+    def _kind(key):
+        if _has_pynput:
+            if key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r):
+                return "alt"
+            if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+                return "ctrl"
         vk = getattr(key, "vk", None)
-        return vk in (18, 164, 165)
+        if vk in _ALT_VKS:
+            return "alt"
+        if vk in _CTRL_VKS:
+            return "ctrl"
+        return "other"  # includes AltGr, which Windows reports as Ctrl+AltGr
 
-    def _is_ctrl_key(self, key) -> bool:
-        if _has_pynput and (key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r)):
-            return True
-        name = getattr(key, "name", "")
-        if name in ("ctrl", "ctrl_l", "ctrl_r"):
-            return True
-        vk = getattr(key, "vk", None)
-        return vk in (17, 162, 163)
+    # -- callbacks (run on pynput's hook thread: keep them tiny) --------------
 
-    def _on_dt_press(self, key):
-        now = time.time()
-        is_alt = self._is_alt_key(key)
-        is_ctrl = self._is_ctrl_key(key)
-
-        if is_alt:
-            if self._alt_press_time == 0.0:
-                self._alt_press_time = now
-                self._alt_invalidated = False
-        elif is_ctrl:
-            if self._ctrl_press_time == 0.0:
-                self._ctrl_press_time = now
-                self._ctrl_invalidated = False
-        else:
-            # If any other key is pressed while Alt or Ctrl is held down,
-            # this is a combination (e.g. Alt+Tab, Ctrl+C), NOT a standalone tap
-            if self._alt_press_time > 0.0:
-                self._alt_invalidated = True
-            if self._ctrl_press_time > 0.0:
-                self._ctrl_invalidated = True
-
-    def _on_dt_release(self, key):
-        now = time.time()
-        is_alt = self._is_alt_key(key)
-        is_ctrl = self._is_ctrl_key(key)
-
-        # 1. Alt Double-Tap (Fix)
-        if is_alt:
-            if self._alt_press_time > 0.0 and not self._alt_invalidated:
-                hold_time = now - self._alt_press_time
-                if 0.02 <= hold_time <= self.TAP_MAX_HOLD:
-                    interval = now - self._last_alt_release_time
-                    if 0.04 <= interval <= self.DOUBLE_TAP_MAX_INTERVAL:
-                        self._last_alt_release_time = 0.0
-                        self._alt_press_time = 0.0
-                        self._handle_fix()
-                        return
-                    else:
-                        self._last_alt_release_time = now
-                else:
-                    self._last_alt_release_time = 0.0
+    def _on_press(self, key, injected=False):
+        if injected or self._suspended:
+            return
+        now = time.monotonic()
+        kind = self._kind(key)
+        for name, tap in (("alt", self._alt), ("ctrl", self._ctrl)):
+            if kind == name:
+                if tap.down_at == 0.0 or now - tap.down_at > self.STALE_PRESS:
+                    tap.down_at = now
+                    tap.spoiled = False
+                # auto-repeat of a held modifier: keep the original down time
+            elif tap.down_at:
+                # Any other key while this modifier is held makes it a chord
+                # (Alt+Tab, Ctrl+C, Ctrl+Alt, AltGr...), never a tap.
+                tap.spoiled = True
             else:
-                self._last_alt_release_time = 0.0
-            self._alt_press_time = 0.0
-            self._alt_invalidated = False
+                # Typing between two taps breaks the sequence.
+                tap.last_tap_at = 0.0
 
-        # 2. Ctrl Double-Tap (Polish)
-        elif is_ctrl:
-            if self._ctrl_press_time > 0.0 and not self._ctrl_invalidated:
-                hold_time = now - self._ctrl_press_time
-                if 0.02 <= hold_time <= self.TAP_MAX_HOLD:
-                    interval = now - self._last_ctrl_release_time
-                    if 0.04 <= interval <= self.DOUBLE_TAP_MAX_INTERVAL:
-                        self._last_ctrl_release_time = 0.0
-                        self._ctrl_press_time = 0.0
-                        self._handle_polish()
-                        return
-                    else:
-                        self._last_ctrl_release_time = now
-                else:
-                    self._last_ctrl_release_time = 0.0
-            else:
-                self._last_ctrl_release_time = 0.0
-            self._ctrl_press_time = 0.0
-            self._ctrl_invalidated = False
+    def _on_release(self, key, injected=False):
+        if injected or self._suspended:
+            return
+        kind = self._kind(key)
+        if kind == "alt":
+            if self._register_tap(self._alt):
+                self._fire(self.on_fix)
+        elif kind == "ctrl":
+            if self._register_tap(self._ctrl):
+                self._fire(self.on_polish)
 
-    def _handle_fix(self):
-        threading.Thread(target=self.on_fix, daemon=True).start()
+    def _register_tap(self, tap: _Tap) -> bool:
+        now = time.monotonic()
+        clean = tap.down_at and not tap.spoiled and (now - tap.down_at) <= self.TAP_MAX_HOLD
+        tap.down_at = 0.0
+        tap.spoiled = False
+        if not clean:
+            tap.last_tap_at = 0.0
+            return False
+        if tap.last_tap_at and now - tap.last_tap_at <= self.DOUBLE_TAP_MAX_INTERVAL:
+            tap.last_tap_at = 0.0
+            return True
+        tap.last_tap_at = now
+        return False
 
-    def _handle_polish(self):
-        threading.Thread(target=self.on_polish, daemon=True).start()
-
-    def _handle_quit(self):
-        if self.on_quit:
-            threading.Thread(target=self.on_quit, daemon=True).start()
+    @staticmethod
+    def _fire(cb):
+        if cb:
+            threading.Thread(target=cb, daemon=True).start()
