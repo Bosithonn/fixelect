@@ -1352,8 +1352,8 @@ class DashboardWindow:
         ).pack(anchor="w", pady=(0, 6))
 
         self.trigger_mode_var = tk.StringVar(value=self.config.get("trigger_mode", "double_tap"))
-        self.custom_fix_var = tk.StringVar(value=self.config.get("custom_fix", "<ctrl>+<alt>+f"))
-        self.custom_pol_var = tk.StringVar(value=self.config.get("custom_polish", "<ctrl>+<alt>+p"))
+        self.custom_fix_var = tk.StringVar(value=self.config.get("custom_fix", "Ctrl+Alt+F"))
+        self.custom_pol_var = tk.StringVar(value=self.config.get("custom_polish", "Ctrl+Alt+P"))
 
         presets_frame = tk.Frame(pref_card, bg=SURFACE_CARD)
         presets_frame.pack(fill=tk.X, pady=(0, 2))
@@ -1774,10 +1774,12 @@ class DashboardWindow:
         save_config(self.config)
 
         if self.hotkey_listener:
-            try:
-                self.hotkey_listener.reload(self.config)
-            except Exception as e:
-                print(f"Error reloading Windows hotkeys: {e}")
+            def reload_async(cfg):
+                try:
+                    self.hotkey_listener.reload(cfg)
+                except Exception as e:
+                    print(f"Error reloading Windows hotkeys: {e}")
+            threading.Thread(target=reload_async, args=(dict(self.config),), daemon=True).start()
 
         # Refresh KeyCaps and Playground buttons
         self._render_keycaps(self.badge_fix, "fix")

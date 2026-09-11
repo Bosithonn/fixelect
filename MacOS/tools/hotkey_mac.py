@@ -82,7 +82,7 @@ class MacHotkeyListener:
         self.config = config or load_config()
         self.listener = None
         self._running = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         # Double-tap tracking state
         self._active_keys = set()
@@ -98,19 +98,33 @@ class MacHotkeyListener:
             return False
 
         check_accessibility_permissions(prompt=True)
-        return self._start_listener()
+        with self._lock:
+            return self._start_listener_unlocked()
+
+    def stop(self):
+        with self._lock:
+            self._stop_unlocked()
+
+    def _stop_unlocked(self):
+        if self.listener:
+            try:
+                self.listener.stop()
+            except Exception:
+                pass
+            self.listener = None
+        self._running = False
 
     def reload(self, new_config: Optional[dict] = None) -> bool:
         """Dynamically reload hotkeys with updated configuration without stopping daemon."""
         with self._lock:
-            self.stop()
+            self._stop_unlocked()
             if new_config:
                 self.config = new_config
             else:
                 self.config = load_config()
-            return self._start_listener()
+            return self._start_listener_unlocked()
 
-    def _start_listener(self) -> bool:
+    def _start_listener_unlocked(self) -> bool:
         trigger_mode = self.config.get("trigger_mode", "double_tap")
 
         try:
@@ -273,12 +287,4 @@ class MacHotkeyListener:
         if self.on_quit:
             threading.Thread(target=self.on_quit, daemon=True).start()
 
-    def stop(self):
-        with self._lock:
-            if self.listener:
-                try:
-                    self.listener.stop()
-                except Exception:
-                    pass
-                self.listener = None
-            self._running = False
+

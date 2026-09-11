@@ -17,8 +17,8 @@ DEFAULT_CONFIG = {
     "trigger_mode": "double_tap",       # "double_tap" | "alt_space" | "classic" | "custom"
     "hotkey_fix": "double_alt",
     "hotkey_polish": "double_control",
-    "custom_fix": "<ctrl>+<alt>+f",
-    "custom_polish": "<ctrl>+<alt>+p",
+    "custom_fix": "Ctrl+Alt+F",
+    "custom_polish": "Ctrl+Alt+P",
 }
 
 
@@ -36,13 +36,13 @@ def get_hotkey_keycaps(mode: str = "fix", config: dict = None) -> list:
     elif t_mode == "custom":
         raw = config.get("custom_fix" if mode == "fix" else "custom_polish", "")
         mapping = {
-            "<alt>": "Alt", "alt": "Alt",
-            "<ctrl>": "Ctrl", "control": "Ctrl", "ctrl": "Ctrl",
-            "<shift>": "Shift", "shift": "Shift",
-            "<space>": "Space", "space": "Space",
-            "<win>": "Win", "win": "Win",
+            "alt": "Alt",
+            "ctrl": "Ctrl", "control": "Ctrl",
+            "shift": "Shift",
+            "space": "Space",
+            "win": "Win", "cmd": "Win",
         }
-        parts = [p.strip().lower() for p in raw.replace("+", " + ").split(" + ") if p.strip()]
+        parts = [p.strip().lower().strip("<>") for p in raw.replace("+", " + ").split(" + ") if p.strip()]
         result = []
         for p in parts:
             result.append(mapping.get(p, p.upper()))

@@ -52,7 +52,7 @@ class WinHotkeyListener:
         self.config = config or load_config()
         self.listener = None
         self._running = False
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         # Double-tap tracking state
         self._active_keys = set()
@@ -66,30 +66,34 @@ class WinHotkeyListener:
         if not _has_pynput:
             print("  ! warning: pynput module not installed. Global hotkeys unavailable.")
             return False
-        return self._start_listener()
+        with self._lock:
+            return self._start_listener_unlocked()
 
     def stop(self):
         with self._lock:
-            if self.listener:
-                try:
-                    self.listener.stop()
-                except Exception:
-                    pass
-                self.listener = None
-            self._running = False
-            self._active_keys.clear()
+            self._stop_unlocked()
+
+    def _stop_unlocked(self):
+        if self.listener:
+            try:
+                self.listener.stop()
+            except Exception:
+                pass
+            self.listener = None
+        self._running = False
+        self._active_keys.clear()
 
     def reload(self, new_config: Optional[dict] = None) -> bool:
         """Dynamically reload hotkeys with updated configuration without restarting daemon."""
         with self._lock:
-            self.stop()
+            self._stop_unlocked()
             if new_config:
                 self.config = new_config
             else:
                 self.config = load_config()
-            return self._start_listener()
+            return self._start_listener_unlocked()
 
-    def _start_listener(self) -> bool:
+    def _start_listener_unlocked(self) -> bool:
         trigger_mode = self.config.get("trigger_mode", "double_tap")
 
         try:
@@ -110,8 +114,8 @@ class WinHotkeyListener:
                     hotkey_map["<ctrl>+<alt>+f"] = self._handle_fix
                     hotkey_map["<ctrl>+<alt>+p"] = self._handle_polish
                 elif trigger_mode == "custom":
-                    fix_key = self._normalize_combo(self.config.get("custom_fix", "<ctrl>+<alt>+f"))
-                    pol_key = self._normalize_combo(self.config.get("custom_polish", "<ctrl>+<alt>+p"))
+                    fix_key = self._normalize_combo(self.config.get("custom_fix", "Ctrl+Alt+F"))
+                    pol_key = self._normalize_combo(self.config.get("custom_polish", "Ctrl+Alt+P"))
                     if fix_key:
                         hotkey_map[fix_key] = self._handle_fix
                     if pol_key:
@@ -120,9 +124,10 @@ class WinHotkeyListener:
                 if self.on_quit:
                     hotkey_map["<ctrl>+<alt>+q"] = self._handle_quit
 
-                self.listener = keyboard.GlobalHotKeys(hotkey_map)
-                self.listener.start()
-                self._running = True
+                if hotkey_map:
+                    self.listener = keyboard.GlobalHotKeys(hotkey_map)
+                    self.listener.start()
+                    self._running = True
                 return True
 
         except Exception as e:
@@ -143,19 +148,22 @@ class WinHotkeyListener:
             ("space", "<space>"),
             ("win", "<cmd>"),
             ("windows", "<cmd>"),
+            ("cmd", "<cmd>"),
         ]
         tokens = [t.strip() for t in s.split("+") if t.strip()]
         out = []
         for t in tokens:
+            t_clean = t.strip("<>")
             matched = False
             for src, dst in replacements:
-                if t == src or t == dst:
+                if t_clean == src or t == dst:
                     out.append(dst)
                     matched = True
                     break
             if not matched:
-                out.append(t)
+                out.append(t_clean)
         return "+".join(out)
+
 
     def _is_alt_key(self, key) -> bool:
         if _has_pynput and (key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr)):

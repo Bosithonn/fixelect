@@ -1778,10 +1778,12 @@ class DashboardWindow:
         save_config(self.config)
 
         if self.hotkey_listener:
-            try:
-                self.hotkey_listener.reload(self.config)
-            except Exception as e:
-                print(f"Error reloading hotkeys: {e}")
+            def reload_async(cfg):
+                try:
+                    self.hotkey_listener.reload(cfg)
+                except Exception as e:
+                    print(f"Error reloading hotkeys: {e}")
+            threading.Thread(target=reload_async, args=(dict(self.config),), daemon=True).start()
 
         # Refresh KeyCaps and Playground buttons
         self._render_keycaps(self.badge_fix, "fix")
