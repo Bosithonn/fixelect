@@ -22,7 +22,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "shared"
 import check_guard as G  # noqa: E402
 import engine as E  # noqa: E402
 
-PROFILE = sys.argv[1] if len(sys.argv) > 1 else "3b"
+# python tests/accuracy_benchmark.py [3b|1.5b]   or   --model-path=path/to/any.gguf
+MODEL_PATH = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--model-path=")), None)
+PROFILE = next((a for a in sys.argv[1:] if not a.startswith("--")),
+               pathlib.Path(MODEL_PATH).stem if MODEL_PATH else "3b")
 PORT = {"3b": 18891, "1.5b": 18892}.get(PROFILE, 18893)
 
 # (category, input, acceptable outputs). Comparison ignores first-letter case and final ./!
@@ -115,7 +118,7 @@ def polish_ok(inp, out, need, shape):
 
 def main():
     G.load_config = lambda: {"model_profile": PROFILE}
-    eng = E.EmbeddedEngine(port=PORT, model_profile=PROFILE)
+    eng = E.EmbeddedEngine(port=PORT, model_profile=PROFILE, model_path=MODEL_PATH)
     E._default_engine = eng
     fix = G.load_pipeline("qwen2.5", fast=False, beams=1, engine_type="embedded")
     rows, lat = [], []

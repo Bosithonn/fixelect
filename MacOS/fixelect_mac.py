@@ -332,12 +332,17 @@ class MacApp:
                      f"Select up to {MAX_SELECTION_CHARS:,} characters at a time.", timeout=4500)
             return
         lang = detect_language(text)
-        if lang != "en" and (lang not in languages.SUPPORTED or not cfg.get("multilingual", True)):
+        supported = languages.supported_for(cfg.get("model_profile"))
+        if lang != "en" and (lang not in supported or not cfg.get("multilingual", True)):
             self._schedule_restore(original, 0.05)
             name = languages.NAMES.get(lang, "This language")
-            if lang in languages.SUPPORTED:
+            if lang in supported:
                 self.hud("info", f"{name} is turned off", "Turn on other languages in Settings → Writing.",
                          timeout=5000)
+            elif lang in languages.supported_for(languages.MORE_LANGUAGES_MODEL):
+                self.hud("info", f"{name} needs the Gemma 4 model",
+                         f"{name} is in beta. Choose Gemma 4 E2B in Settings → Model.",
+                         actions=[("Model", lambda: self.open_window("dashboard", "Model"))], timeout=6000)
             else:
                 self.hud("info", f"{name if lang != 'other' else 'This language'} isn't supported yet",
                          f"Fixelect works in {supported_languages_line()}.", timeout=5500)

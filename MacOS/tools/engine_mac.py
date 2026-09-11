@@ -194,7 +194,7 @@ class MacEmbeddedEngine:
             self.port = self._free_port()
             self._close_conn()
             cmd = [str(server_bin), "-m", str(model_path), "--host", self.host, "--port", str(self.port),
-                   "-c", str(CONTEXT_SIZE), "-np", "1", "--log-disable"]
+                   "-c", str(CONTEXT_SIZE), "-np", "1", "--log-disable", "--jinja"]
             if self.hw["is_apple_silicon"]:
                 cmd += ["-ngl", "99"]
             else:
@@ -272,8 +272,11 @@ class MacEmbeddedEngine:
             return True
 
     def chat_completion(self, messages, temperature=0.0, max_tokens=512, top_k=20, top_p=0.9, seed=None):
+        # enable_thinking=False: reasoning models (Gemma 4, Qwen 3) otherwise spend the
+        # whole token budget "thinking" and return an empty answer. Ignored by other models.
         payload = {"messages": messages, "temperature": temperature, "max_tokens": max_tokens,
-                   "top_k": top_k, "top_p": top_p, "stream": False, "cache_prompt": True}
+                   "top_k": top_k, "top_p": top_p, "stream": False, "cache_prompt": True,
+                   "chat_template_kwargs": {"enable_thinking": False}}
         if seed is not None:
             payload["seed"] = seed
         body = json.dumps(payload).encode("utf-8")

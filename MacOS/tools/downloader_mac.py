@@ -30,6 +30,21 @@ MODELS = {
         "desc": "Preserves 100% of your voice, corrects nuanced grammar, sub-second on Metal GPU.",
         "ollama_blob": "sha256-5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6",
     },
+    "gemma4-e2b": {
+        "name": "Gemma 4 E2B",
+        "full_name": "Gemma 4 E2B — Best for other languages",
+        "short_name": "Gemma 4 E2B",
+        "filename": "gemma-4-E2B-it-Q4_K_M.gguf",
+        "sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8",
+        "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+        "size_bytes": 3106738272,
+        "approx_mb": 2963,
+        "badge_size": "3.1 GB",
+        "badge_rec": "MORE LANGUAGES",
+        "tag": "More languages",
+        "desc": "Google's Gemma 4. Best for Spanish, French, German, Russian and more, plus Uzbek (beta). A little slower.",
+        "ollama_blob": "",
+    },
     "1.5b": {
         "name": "Qwen 2.5 1.5B",
         "full_name": "Qwen 2.5 1.5B — Fast & Compact",
@@ -247,8 +262,8 @@ def get_bin_dir() -> pathlib.Path:
 
 # Pinned llama.cpp Metal build. Release builds ship it inside Fixelect.app
 # (build_dmg.sh); this download is only a fallback for source checkouts.
-ENGINE_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b4600/llama-b4600-bin-macos-arm64.zip"
-ENGINE_SHA256 = "b1bfd80df6eca26ef304df47135069dfdf282fa4dcfba1a684e1ff857728973a"
+ENGINE_URL = "https://github.com/ggml-org/llama.cpp/releases/download/b10917/llama-b10917-bin-macos-arm64.tar.gz"
+ENGINE_SHA256 = "3deb6ddac52ae7afa5768a10a26288214f2d635a4f7b13ceb96ddbb60ade993a"
 
 
 def fetch_metal_engine(progress_callback=None) -> pathlib.Path | None:
@@ -261,13 +276,13 @@ def fetch_metal_engine(progress_callback=None) -> pathlib.Path | None:
         if existing.is_file() and os.access(existing, os.X_OK):
             return existing
 
-    zip_path = bin_dir / "llama_metal.zip"
+    archive = bin_dir / "llama_metal.tar.gz"
     dest = bin_dir / "llama.cpp"
     try:
-        import zipfile
+        import tarfile
         req = urllib.request.Request(ENGINE_URL, headers={"User-Agent": "Fixelect-macOS/1.1"})
         digest = hashlib.sha256()
-        with urllib.request.urlopen(req, timeout=60) as resp, open(zip_path, "wb") as out:
+        with urllib.request.urlopen(req, timeout=60) as resp, open(archive, "wb") as out:
             total = int(resp.headers.get("Content-Length", 0) or 0)
             done = 0
             while True:
@@ -280,12 +295,14 @@ def fetch_metal_engine(progress_callback=None) -> pathlib.Path | None:
                 if progress_callback:
                     progress_callback(done, total or done)
         if digest.hexdigest() != ENGINE_SHA256:
-            zip_path.unlink(missing_ok=True)
+            archive.unlink(missing_ok=True)
             raise RuntimeError("engine download failed its checksum")
         shutil.rmtree(dest, ignore_errors=True)
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(dest)
-        zip_path.unlink(missing_ok=True)
+        dest.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive) as tf:
+            # keeps the dylib version symlinks; refuses paths escaping `dest`
+            tf.extractall(dest, filter="data")
+        archive.unlink(missing_ok=True)
         server = None
         for p in dest.rglob("*"):
             if p.is_file() and (p.name.startswith("llama-") or p.suffix == ".dylib"):

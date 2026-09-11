@@ -362,6 +362,8 @@ class ModelPicker:
             items = [(spec.get("badge_size", ""), TEXT_2, SURFACE_3)]
             if key == rec:
                 items.insert(0, ("Recommended", ACCENT, K.ACCENT_SOFT if bg != K.ACCENT_SOFT else SURFACE_3))
+            if spec.get("tag"):
+                items.insert(0, (spec["tag"], CORAL, K.CORAL_SOFT))
             if not self.setup_mode and key == self.active and D.resolve_model(key):
                 items.insert(0, ("In use", GREEN, GREEN_SOFT))
             elif D.resolve_model(key):
@@ -467,7 +469,7 @@ HELP_ITEMS = [
      "Polish rewrites more freely — try the other shortcut."),
     ("A language isn't supported",
      "Fixelect fixes English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. "
-     "Other languages are left unchanged on purpose."),
+     "Uzbek (beta) works with the Gemma 4 model. Other languages are left unchanged on purpose."),
     ("The shortcut doesn't work",
      "Another app may use the same keys. Pick a different preset in Shortcuts; the status line there shows conflicts."),
     ("The first fix after a break is slow",
@@ -870,7 +872,8 @@ class Dashboard(_Window):
         self._wvars = {}
         for i, (key, title, desc) in enumerate((
             ("polish_preview", "Preview before replacing", "See the polished text first. Enter replaces, Esc cancels."),
-            ("multilingual", "Other languages", f"Also fix {langs}. English uses the most thorough checks."),
+            ("multilingual", "Other languages",
+             f"Also fix {langs}. Uzbek (beta) needs the Gemma 4 model. English uses the most thorough checks."),
             ("keep_formatting", "Keep formatting", "Bold, links and fonts survive in Word, Outlook, Docs and Gmail."),
             ("hud_enabled", "On-screen feedback", "A small card near your text shows progress, results and Undo."),
         )):

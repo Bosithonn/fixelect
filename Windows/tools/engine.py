@@ -371,6 +371,9 @@ class EmbeddedEngine:
             "top_p": top_p,
             "stream": False,
             "cache_prompt": True,  # reuse the system prompt's KV cache between requests
+            # Reasoning models (Gemma 4, Qwen 3) otherwise spend the whole token
+            # budget "thinking" and return an empty answer. Ignored by other models.
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         if seed is not None:
             payload["seed"] = seed

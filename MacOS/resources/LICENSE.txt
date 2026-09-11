@@ -79,4 +79,13 @@ Fixelect bundles, interacts with, or utilizes the following open-source projects
 7. Comtypes
    Copyright (c) 2006-2021 Thomas Heller.
    Licensed under the MIT License.
+
+8. Gemma 4 Language Model (optional download)
+   Developed by Google DeepMind.
+   Licensed under the Apache License, Version 2.0:
+   https://ai.google.dev/gemma/docs/gemma_4_license
+
+9. Uzbek word list (uz_words.txt)
+   Derived from the uz-crawl corpus by Tahrirchi (tahrirchi/uz-crawl).
+   Licensed under the Apache License, Version 2.0.
 ================================================================================

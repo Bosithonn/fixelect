@@ -816,11 +816,28 @@ def looks_technical(word):
     return bool(re.search(r"[A-Za-z]\.[A-Za-z]", w)) and not re.fullmatch(r"(?:[A-Za-z]\.)+[A-Za-z]\.?", w)
 
 
-def acceptable_foreign(ours, given, short_words=True):
+def acceptable_foreign(ours, given, short_words=True, lang=None):
     """Language-neutral judgement for languages without a bundled dictionary:
     accents, capitals and punctuation may change freely; letters only as much
     as a typo fix needs."""
+    # Never switch alphabet (Cyrillic -> Latin transliteration) or bring in
+    # letters the language does not have (Turkish ı in Uzbek).
+    src_scripts = L.scripts(ours)
+    if src_scripts and not L.scripts(given) <= src_scripts:
+        return False
+    if L.foreign_letters(given, lang) - L.foreign_letters(ours, lang):
+        return False
+    if lang == "uz":
+        # A correctly spelled, known Uzbek word is never replaced; adding a
+        # missing apostrophe (dokon -> do'kon) keeps the same key and passes.
+        lex = L.uz_lexicon()
+        ko, kg = L.uz_key(ours), L.uz_key(given)
+        if lex and ko != kg and ko in lex:
+            return False
     a, b = normalise(ours), normalise(given)
+    # Capitals may be added (sentence start, "i" -> "I") but never taken away.
+    if sum(c.isupper() for c in given) < sum(c.isupper() for c in ours) and a == b:
+        return False
     if a == b:
         return _punct_count(given) >= _punct_count(ours) or len(given) >= len(ours)
     sa, sb = L.strip_accents(a), L.strip_accents(b)
@@ -845,7 +862,7 @@ def acceptable(mine, theirs, short_words=True, prev=None, lang="en"):
 
     ours, given = " ".join(mine), " ".join(theirs)
     if lang != "en":
-        return acceptable_foreign(ours, given, short_words)
+        return acceptable_foreign(ours, given, short_words, lang)
 
     # Recognized English homophone/grammar confusion (e.g. your -> you're, too -> to)
     if is_grammar_swap(ours, given):
@@ -939,6 +956,8 @@ def proposed_edits(original, rewritten, lang="en"):
         ours_g, given_g = " ".join(mine), " ".join(theirs)
         if (normalise(ours_g) == normalise(given_g) and ours_g != given_g
                 and _punct_count(given_g) >= _punct_count(ours_g)
+                # outside English, capitals may be added but never removed
+                and (lang == "en" or sum(c.isupper() for c in given_g) >= sum(c.isupper() for c in ours_g))
                 and max(len(mine), len(theirs)) <= MAX_GROUP
                 and not any(looks_like_code(w) or looks_technical(w) or _core(w) in PROTECTED_WORDS
                             for w in mine)):
@@ -1358,11 +1377,11 @@ def embedded_rewrites(engine, text, candidates=1, mode="fix", messages=None, var
 
 
 def detect_language(text):
-    return L.detect(text, is_probably_english)
+    return L.detect(text, is_probably_english, DICTIONARY)
 
 
 def run_pipeline(get_engine, text, mode="fix", style="professional", custom="", variant=0,
-                 multilingual=True, info=None):
+                 multilingual=True, info=None, lang=None):
     """One fix or polish of a single block of text through the embedded engine.
 
     Returns (final, applied_edits, expanded). `info` (a dict) receives:
@@ -1371,14 +1390,22 @@ def run_pipeline(get_engine, text, mode="fix", style="professional", custom="", 
       polish_fallback  True when a polish was refused and a safe fix was used
     """
     info = {} if info is None else info
-    lang = detect_language(text)
+    lang = lang or detect_language(text)   # callers may force a language (benchmarks)
     info["lang"] = lang
-    if lang != "en" and (not multilingual or lang not in L.SUPPORTED):
+    eng = get_engine()
+    if lang != "en" and (not multilingual or lang not in L.supported_for(getattr(eng, "model_profile", None))):
         info["skipped"] = "language"
         return text, [], text
 
-    eng = get_engine()
     eng.ensure_running()
+
+    # Uzbek Cyrillic: the model fixes Latin far better (and otherwise tends to
+    # transliterate), so fix a Latin copy and carry only the changed words back.
+    if lang == "uz" and L.script_profile(text)["cyrillic"] > 0.5:
+        latin = L.uz_to_latin(text)
+        fixed, applied, _ = run_pipeline(get_engine, latin, mode, style, custom, variant, multilingual, info, "uz")
+        result = L.uz_apply_back(text, latin, fixed) if fixed != latin else text
+        return (result if L.script_profile(result)["cyrillic"] > 0.5 else text), applied, text
 
     if lang != "en":
         if mode == "polish":

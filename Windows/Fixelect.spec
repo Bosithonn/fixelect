@@ -11,6 +11,7 @@ datas = [
     (os.path.join(shared_root, 'data', 'dictionary.txt'), '.'),
     (os.path.join(shared_root, 'data', 'shorthand.txt'), '.'),
     (os.path.join(shared_root, 'data', 'words.txt'), '.'),
+    (os.path.join(shared_root, 'data', 'uz_words.txt'), '.'),
     (os.path.join(project_root, 'LICENSE.txt'), '.'),
     (os.path.join(project_root, 'PRIVACY_POLICY.md'), '.'),
     (os.path.join(project_root, 'resources'), 'resources'),

@@ -26,8 +26,9 @@ ENTITLEMENTS="$SCRIPT_DIR/entitlements.plist"
 
 # Pinned llama.cpp Metal build shipped inside the app (the app never downloads
 # code at runtime). Keep in sync with tools/downloader_mac.py.
-ENGINE_URL="https://github.com/ggml-org/llama.cpp/releases/download/b4600/llama-b4600-bin-macos-arm64.zip"
-ENGINE_SHA256="b1bfd80df6eca26ef304df47135069dfdf282fa4dcfba1a684e1ff857728973a"
+ENGINE_TAG="b10917"   # supports Gemma 4 and Qwen 3 (the old b4600 did not)
+ENGINE_URL="https://github.com/ggml-org/llama.cpp/releases/download/$ENGINE_TAG/llama-$ENGINE_TAG-bin-macos-arm64.tar.gz"
+ENGINE_SHA256="3deb6ddac52ae7afa5768a10a26288214f2d635a4f7b13ceb96ddbb60ade993a"
 
 echo "== Building $APP_NAME for macOS"
 
@@ -39,32 +40,36 @@ pyinstaller --clean Fixelect_Mac.spec -y
 
 # 2. The AI engine, verified against its pinned checksum
 mkdir -p "$BUILD_DIR"
-ENGINE_ZIP="$BUILD_DIR/llama-engine.zip"
-if [ ! -f "$ENGINE_ZIP" ] || [ "$(shasum -a 256 "$ENGINE_ZIP" | cut -d ' ' -f 1)" != "$ENGINE_SHA256" ]; then
-    echo ">> Downloading the llama.cpp engine"
-    curl -fsSL -o "$ENGINE_ZIP" "$ENGINE_URL"
+ENGINE_TGZ="$BUILD_DIR/llama-engine-$ENGINE_TAG.tar.gz"
+if [ ! -f "$ENGINE_TGZ" ] || [ "$(shasum -a 256 "$ENGINE_TGZ" | cut -d ' ' -f 1)" != "$ENGINE_SHA256" ]; then
+    echo ">> Downloading the llama.cpp engine ($ENGINE_TAG)"
+    curl -fsSL -o "$ENGINE_TGZ" "$ENGINE_URL"
 fi
-if [ "$(shasum -a 256 "$ENGINE_ZIP" | cut -d ' ' -f 1)" != "$ENGINE_SHA256" ]; then
+if [ "$(shasum -a 256 "$ENGINE_TGZ" | cut -d ' ' -f 1)" != "$ENGINE_SHA256" ]; then
     echo "Error: engine checksum mismatch"; exit 1
 fi
 rm -rf "$BUILD_DIR/llama-engine"
-unzip -q "$ENGINE_ZIP" -d "$BUILD_DIR/llama-engine"
+mkdir -p "$BUILD_DIR/llama-engine"
+tar -xzf "$ENGINE_TGZ" -C "$BUILD_DIR/llama-engine"
 ENGINE_DEST="$APP_BUNDLE/Contents/Frameworks/llama"
 mkdir -p "$ENGINE_DEST"
-cp "$BUILD_DIR/llama-engine/build/bin/llama-server" "$BUILD_DIR/llama-engine/build/bin/"*.dylib "$ENGINE_DEST/"
-chmod 755 "$ENGINE_DEST"/*
-echo ">> Engine bundled: $(ls "$ENGINE_DEST" | tr '\n' ' ')"
+# cp -R keeps the dylib version symlinks (libllama.dylib -> libllama.0.dylib) intact.
+cp -R "$BUILD_DIR/llama-engine/llama-$ENGINE_TAG/." "$ENGINE_DEST/"
+[ -x "$ENGINE_DEST/llama-server" ] || { echo "Error: llama-server missing from the engine archive"; exit 1; }
+echo ">> Engine bundled: $(ls "$ENGINE_DEST" | wc -l | tr -d ' ') files, $(du -sh "$ENGINE_DEST" | cut -f1)"
+# Mach-O files to sign (symlinks are signed through their targets).
+ENGINE_BINARIES=$(find "$ENGINE_DEST" -type f \( -name "*.dylib" -o -perm -u+x \))
 
 # 3. Code signing (inside-out: engine binaries, then the app)
 if [ -n "${DEVELOPER_ID:-}" ]; then
     echo ">> Signing with $DEVELOPER_ID"
     SIGN=(codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$DEVELOPER_ID")
-    for f in "$ENGINE_DEST"/*; do "${SIGN[@]}" "$f"; done
+    for f in $ENGINE_BINARIES; do "${SIGN[@]}" "$f"; done
     "${SIGN[@]}" --deep "$APP_BUNDLE"
     codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 else
     echo ">> No DEVELOPER_ID: ad-hoc signing (Gatekeeper will ask the user to confirm on first open)"
-    for f in "$ENGINE_DEST"/*; do codesign --force --sign - "$f"; done
+    for f in $ENGINE_BINARIES; do codesign --force --sign - "$f"; done
     codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 fi
 

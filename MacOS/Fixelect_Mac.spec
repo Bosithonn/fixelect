@@ -14,6 +14,7 @@ a = Analysis(
         ('resources', 'resources'),
         (os.path.join(SHARED, 'data', 'dictionary.txt'), '.'),
         (os.path.join(SHARED, 'data', 'words.txt'), '.'),
+        (os.path.join(SHARED, 'data', 'uz_words.txt'), '.'),
         (os.path.join(SHARED, 'data', 'shorthand.txt'), '.'),
         ('resources/PRIVACY_POLICY.md', '.'),
         ('resources/LICENSE.txt', '.'),

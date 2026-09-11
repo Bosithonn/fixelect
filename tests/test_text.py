@@ -82,11 +82,33 @@ CASES = [
      "il était fermé"),
     ("foreign: typo fix accepted", lambda: G.consensus("я купил малоко", ["я купил молоко"], lang="ru")[0],
      "я купил молоко"),
+    ("foreign: capital never removed", lambda: G.consensus("Meeting завтра", ["meeting завтра"], lang="ru")[0],
+     "Meeting завтра"),
+    ("foreign: capital may be added", lambda: G.consensus("привет, как дела", ["Привет, как дела"], lang="ru")[0],
+     "Привет, как дела"),
     ("foreign: word swap refused", lambda: G.consensus("я купил хлеб", ["я купил сыр"], lang="ru")[0],
      "я купил хлеб"),
     ("foreign: polish translation refused", lambda: G.polish_guard(
         "Mañana voy a la oficina porque tengo mucho trabajo", "Tomorrow I am going to the office", lang="es"),
      "Mañana voy a la oficina porque tengo mucho trabajo"),
+    # Uzbek helpers
+    ("uz: Cyrillic to Latin", lambda: G.L.uz_to_latin("Мен кеча дўконга бордим, ғалаба!"),
+     "Men kecha do'konga bordim, g'alaba!"),
+    ("uz: word-initial е is ye", lambda: G.L.uz_to_latin("Ер юзи"), "Yer yuzi"),
+    ("uz: Latin to Cyrillic", lambda: G.L.uz_to_cyrillic("Bo'ldim, hafta, shahar, choy, g'isht"),
+     "Бўлдим, ҳафта, шаҳар, чой, ғишт"),
+    ("uz: fix carried back to Cyrillic", lambda: G.L.uz_apply_back(
+        "Бу хафта жуда банд булдим", "Bu xafta juda band buldim", "Bu hafta juda band bo'ldim"),
+     "Бу ҳафта жуда банд бўлдим"),
+    ("uz: untouched Cyrillic words kept exactly", lambda: G.L.uz_apply_back(
+        "Салом, дўстим", "Salom, do'stim", "Salom, do'stim"), "Салом, дўстим"),
+    ("uz: key ignores apostrophes", lambda: G.L.uz_key("Oʻqib") == G.L.uz_key("oqib") == G.L.uz_key("Ўқиб"), True),
+    ("uz: only with Gemma", lambda: ("uz" in G.L.supported_for("gemma4-e2b"), "uz" in G.L.supported_for("3b")),
+     (True, False)),
+    ("uz: Turkish letter refused", lambda: G.consensus("metro bekati ochildi", ["metro bekatı ochildi"], lang="uz")[0],
+     "metro bekati ochildi"),
+    ("uz: apostrophe fix accepted", lambda: G.consensus("Men dokonga bordim", ["Men do'konga bordim"], lang="uz")[0],
+     "Men do'konga bordim"),
     # styles
     ("styles: all have prompts", lambda: all(G.build_messages("x", "polish", s)[0]["content"]
                                              for s in G.POLISH_STYLES), True),
