@@ -58,7 +58,7 @@ PRESETS_WIN = [
     ("custom", "Custom", "", "Record your own shortcuts"),
 ]
 PRESETS_MAC = [
-    ("double_tap", "Double-tap", "Recommended", "⌥ ⌥ to fix  ·  ⌃ ⌃ to polish"),
+    ("double_tap", "Double-tap", "Recommended", "⌥ ⌥ to fix  ·  ⇧ ⇧ to polish"),
     ("option_space", "Option + Space", "", "⌥ Space to fix  ·  ⌥ ⇧ Space to polish"),
     ("classic", "Classic", "", "⌘ ⌥ F to fix  ·  ⌘ ⌥ P to polish"),
     ("custom", "Custom", "", "Record your own shortcuts"),

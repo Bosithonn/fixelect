@@ -1,8 +1,8 @@
 """
 macOS global triggers for Fixelect and the Accessibility permission check.
 
-    Option  x2 (⌥ ⌥)  -> Fix
-    Control x2 (⌃ ⌃)  -> Polish
+    Option x2 (⌥ ⌥)  -> Fix
+    Shift  x2 (⇧ ⇧)  -> Polish   (not ⌃ ⌃: that is macOS's Dictation shortcut)
     Presets: ⌥ Space / ⌥⇧ Space, ⌘⌥F / ⌘⌥P, or custom combinations.
 
 All triggers run on Fixelect's own Quartz event tap instead of pynput's:
@@ -14,7 +14,9 @@ All triggers run on Fixelect's own Quartz event tap instead of pynput's:
   granted);
 - only Fixelect's own synthetic keys (Cmd+C / Cmd+V) are ignored, so key
   events from other processes - including the end-to-end test - count;
-- shortcut keys are swallowed, so ⌥Space no longer types a space in the app.
+- shortcut keys are swallowed, so ⌥Space no longer types a space in the app;
+- a key press or mouse click between two taps cancels the double-tap, so
+  typing capitals or Shift-clicking a selection never triggers Polish.
 
 There is deliberately NO global quit shortcut; Quit lives in the menu bar.
 """
@@ -42,6 +44,7 @@ except ImportError:  # pragma: no cover
 _SHIFT, _CTRL, _OPT, _CMD = 0x20000, 0x40000, 0x80000, 0x100000   # kCGEventFlagMask*
 _MODS = _SHIFT | _CTRL | _OPT | _CMD
 _ESC = 53
+_MOUSE_DOWN = (1, 3, 25)   # kCGEventLeftMouseDown, RightMouseDown, OtherMouseDown
 
 # ANSI virtual key codes for custom shortcuts
 _KEYCODES = {
@@ -155,6 +158,8 @@ class _KeyTap:
                 return event   # our own Cmd+C / Cmd+V
             if etype == Quartz.kCGEventFlagsChanged:
                 self.on_flags(int(Quartz.CGEventGetFlags(event)))
+            elif etype in _MOUSE_DOWN:
+                self.on_key(-1, int(Quartz.CGEventGetFlags(event)), False)   # a click, e.g. ⇧-click
             elif etype == Quartz.kCGEventKeyDown:
                 code = int(Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode))
                 repeat = bool(Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventAutorepeat))
@@ -168,6 +173,8 @@ class _KeyTap:
         try:
             mask = (Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown)
                     | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged))
+            for etype in _MOUSE_DOWN:
+                mask |= Quartz.CGEventMaskBit(etype)
             self.tap = Quartz.CGEventTapCreate(Quartz.kCGSessionEventTap, Quartz.kCGHeadInsertEventTap,
                                                Quartz.kCGEventTapOptionDefault, mask, self._callback_ref, None)
             if self.tap is None:   # no Accessibility permission (yet)
@@ -203,9 +210,10 @@ class MacHotkeyListener:
         self._keytap = None
         self._flags = 0
         self._opt = _Tap()
-        self._ctrl = _Tap()
+        self._shift = _Tap()
         self._combos = {}
         self._escape = None
+        self._capture = None
         self._watchdog = None
 
     # -- public API -------------------------------------------------------------
@@ -244,11 +252,18 @@ class MacHotkeyListener:
     def suspend(self, flag: bool):
         self._suspended = bool(flag)
         self._opt.reset()
-        self._ctrl.reset()
+        self._shift.reset()
 
     def watch_escape(self, callback: Optional[Callable]):
         """Call `callback` when Esc is pressed (None stops watching)."""
         self._escape = callback
+
+    def capture_keys(self, handler: Optional[Callable]):
+        """Offer every key press to handler(code, flags) first; True swallows it (None stops).
+
+        The Polish preview uses this: macOS 14+ won't let a background app take the
+        keyboard, so Return would otherwise land in the user's document."""
+        self._capture = handler
 
     # -- tap lifecycle ----------------------------------------------------------
 
@@ -269,7 +284,7 @@ class MacHotkeyListener:
                 self._combos[parsed] = cb
         self._double_tap = mode == "double_tap"
         self._opt.reset()
-        self._ctrl.reset()
+        self._shift.reset()
 
     def _open_tap(self) -> bool:
         if not _has_quartz:
@@ -309,7 +324,7 @@ class MacHotkeyListener:
         if self._suspended or not self._double_tap:
             return
         now = time.monotonic()
-        for bit, tap, cb in ((_OPT, self._opt, self.on_fix), (_CTRL, self._ctrl, self.on_polish)):
+        for bit, tap, cb in ((_OPT, self._opt, self.on_fix), (_SHIFT, self._shift, self.on_polish)):
             if pressed & bit:
                 if tap.down_at == 0.0 or now - tap.down_at > self.STALE_PRESS:
                     tap.down_at = now
@@ -324,11 +339,18 @@ class MacHotkeyListener:
                     tap.last_tap_at = 0.0    # another modifier between taps breaks the sequence
 
     def _on_key(self, code, flags, repeat) -> bool:
+        capture = self._capture
+        if capture is not None and not repeat:
+            try:
+                if capture(code, flags):
+                    return True
+            except Exception:
+                pass
         if code == _ESC and self._escape is not None:
             self._fire(self._escape)
         if self._suspended:
             return False
-        for tap in (self._opt, self._ctrl):
+        for tap in (self._opt, self._shift):
             if tap.down_at:
                 tap.spoiled = True           # a chord such as ⌥E
             else:

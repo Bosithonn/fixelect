@@ -58,11 +58,37 @@ def t_double_option():
     return fired == ["fix"], fired
 
 
-def t_double_control():
+def t_double_shift():
     lst, fired = make()
-    tap(lst, CTRL)
-    tap(lst, CTRL)
+    tap(lst, SHIFT)
+    tap(lst, SHIFT)
     return fired == ["polish"], fired
+
+
+def t_double_control_does_nothing():
+    lst, fired = make()                  # ⌃⌃ is macOS's Dictation shortcut
+    tap(lst, CTRL)
+    tap(lst, CTRL)
+    return fired == [], fired
+
+
+def t_typing_capitals():
+    lst, fired = make()
+    for code in (0, 1):                  # ⇧A then ⇧S, typed quickly
+        lst._on_flags(SHIFT)
+        lst._on_key(code, SHIFT, False)
+        CLOCK.sleep(0.05)
+        lst._on_flags(0)
+        CLOCK.sleep(0.08)
+    return fired == [], fired
+
+
+def t_shift_click_between():
+    lst, fired = make()
+    tap(lst, SHIFT)
+    lst._on_key(-1, 0, False)            # a mouse click
+    tap(lst, SHIFT)
+    return fired == [], fired
 
 
 def t_single_tap():
@@ -105,7 +131,7 @@ def t_typing_between():
 def t_mixed_modifiers():
     lst, fired = make()
     tap(lst, OPT)
-    tap(lst, CTRL)
+    tap(lst, SHIFT)
     return fired == [], fired
 
 
@@ -162,6 +188,19 @@ def t_escape():
     lst.watch_escape(None)
     lst._on_key(53, 0, False)
     return fired == ["esc"], fired
+
+
+def t_capture_keys():
+    lst, fired = make("classic")
+    seen = []
+    lst.capture_keys(lambda code, flags: seen.append(code) or code == 36)
+    swallowed = lst._on_key(36, 0, False)            # Return: taken by the preview
+    passed = lst._on_key(0, 0, False)                # "a": still reaches the app
+    combo = lst._on_key(3, CMD | OPT, False)         # shortcuts keep working
+    lst.capture_keys(None)
+    after = lst._on_key(36, 0, False)
+    ok = swallowed and not passed and combo and not after and seen == [36, 0, 3] and fired == ["fix"]
+    return ok, (swallowed, passed, combo, after, seen, fired)
 
 
 def main():

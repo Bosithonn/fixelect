@@ -216,7 +216,7 @@ jobs:
   # Installs the DMG just built, grants Accessibility the way a user would in
   # System Settings (GitHub's macOS images run without SIP, so TCC.db is
   # writable), adds a small model and checks that double-tap Option fixes and
-  # double-tap Control polishes text in TextEdit. Screenshots are published to
+  # double-tap Shift polishes text in TextEdit. Screenshots are published to
   # the ci-shots-<os> branches.
   # ---------------------------------------------------------------------------
   e2e-macos:
@@ -281,7 +281,7 @@ jobs:
           sleep 15
           pgrep -fl "Fixelect.app/Contents/MacOS/Fixelect" || { echo "::error title=E2E::Fixelect is not running"; exit 1; }
 
-      - name: Double-tap Option and Control in TextEdit
+      - name: Double-tap Option and Shift in TextEdit
         run: python tests/mac_e2e.py e2e-shots
 
       - name: Fixelect log
@@ -350,7 +350,7 @@ jobs:
             **First launch:** if Windows shows "Windows protected your PC", click **More info → Run anyway**. On a Mac, if it says Fixelect can't be opened, go to **System Settings → Privacy & Security → Open Anyway**, or paste `xattr -dr com.apple.quarantine /Applications/Fixelect.app && open /Applications/Fixelect.app` into Terminal. Builds are signed automatically once the project has signing certificates.
 
             ### Highlights
-            - **Fix** (double-tap Alt / ⌥) keeps your voice; **Polish** (double-tap Ctrl / ⌃) shows a preview with Professional, Friendly, Concise, Formal and Shorter styles.
+            - **Fix** (double-tap Alt / ⌥) keeps your voice; **Polish** (double-tap Ctrl on Windows, ⇧ Shift on Mac) shows a preview with Professional, Friendly, Concise, Formal and Shorter styles.
             - An on-screen card shows progress and results, with one-click **Undo**.
             - Formatting (bold, links, fonts) is kept in Word, Outlook, Google Docs and Gmail.
             - English plus Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. Uzbek (beta) with the optional Gemma 4 model.

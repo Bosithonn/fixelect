@@ -5,7 +5,7 @@ Apple Silicon Metal acceleration • Menu bar app • Global triggers
 
 Triggers (default):
   Option x2 (⌥ ⌥)   ->  Fix typos & grammar (voice preserved)
-  Control x2 (⌃ ⌃)  ->  Polish (preview first, choose a style)
+  Shift x2   (⇧ ⇧)  ->  Polish (preview first, choose a style)
 Quit from the menu bar icon.
 
 Process layout: this daemon owns the menu bar (rumps, main thread), the
@@ -445,6 +445,16 @@ class MacApp:
         return _Stop()
 
     def _polish_with_preview(self, text, cfg, front_app):
+        if self.listener is not None:
+            from hud_mac import preview_key
+            self.listener.capture_keys(preview_key)
+        try:
+            return self._polish_preview_loop(text, cfg, front_app)
+        finally:
+            if self.listener is not None:
+                self.listener.capture_keys(None)
+
+    def _polish_preview_loop(self, text, cfg, front_app):
         from hud_mac import ask_polish
         style = cfg.get("polish_style", "professional")
         if style not in POLISH_STYLES:

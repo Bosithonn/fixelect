@@ -219,6 +219,24 @@ def make_alert(styles, style, after, note=""):
     return alert, popup, keys
 
 
+_preview = {}
+# Return / Enter -> Replace, Esc -> Cancel, R -> Try again (the alert's button order)
+_PREVIEW_KEYS = {36: 0, 76: 0, 53: 1, 15: 2}
+
+
+def preview_key(code, flags=0):
+    """Route a key press to the open Polish preview; True means it was handled.
+
+    Called from Fixelect's keyboard tap. macOS 14+ keeps the user's app in front
+    of a background app's alert, so without this Return would go to the document."""
+    alert = _preview.get("alert")
+    if alert is None or code not in _PREVIEW_KEYS or flags & 0x1C0000:   # not with ⌘ ⌥ ⌃
+        return False
+    index = _PREVIEW_KEYS[code]
+    AppHelper.callAfter(lambda: alert.buttons()[index].performClick_(None))
+    return True
+
+
 def ask_polish(styles, style, before, after, note=""):
     """Blocking (call from the worker). Returns ("accept", text) | ("cancel", None) | ("retry", style)."""
     if not _OK:
@@ -230,7 +248,11 @@ def ask_polish(styles, style, before, after, note=""):
         try:
             NSApp.activateIgnoringOtherApps_(True)
             alert, popup, keys = make_alert(styles, style, after, note)
-            resp = int(alert.runModal())
+            _preview["alert"] = alert
+            try:
+                resp = int(alert.runModal())
+            finally:
+                _preview.pop("alert", None)
             chosen = keys[int(popup.indexOfSelectedItem())]
             if resp == 1000:
                 box["r"] = ("retry", chosen) if chosen != style else ("accept", after)

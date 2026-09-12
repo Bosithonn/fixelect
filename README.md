@@ -35,7 +35,7 @@ It's been a long day, and I can't seem to focus on the task.
 | | Windows | macOS | |
 | :--- | :--- | :--- | :--- |
 | **Fix** | Double-tap `Alt` | Double-tap `⌥ Option` | Typos, spelling and grammar. Your words and voice stay. |
-| **Polish** | Double-tap `Ctrl` | Double-tap `⌃ Control` | A clearer rewrite, shown as a preview first. |
+| **Polish** | Double-tap `Ctrl` | Double-tap `⇧ Shift` | A clearer rewrite, shown as a preview first. |
 
 You can change both in Settings.
 

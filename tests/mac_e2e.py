@@ -3,8 +3,8 @@
 Expects Fixelect.app in /Applications and running, with Accessibility granted,
 a model downloaded and onboarding done - the workflow sets that up the way a
 user would. Opens TextEdit with a sentence full of typos, selects it and
-double-taps Option like a person; then does the same with Control and accepts
-the Polish preview with Return. Screenshots go to the directory given.
+double-taps Option like a person; then does the same with Shift and accepts
+the Polish preview with Return while TextEdit is still in front. Screenshots go to the directory given.
 
 Run: python3 tests/mac_e2e.py [screenshot_dir]
 """
@@ -23,8 +23,8 @@ from ApplicationServices import (AXUIElementCopyAttributeValue, AXUIElementCreat
 TYPOS = "i cant beleive teh wether is so nice today, lets go outside and enjoy it"
 ROUGH = "hey can u send me the report by friday i need it for the meeting"
 OUT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "e2e-shots")
-OPT, CTRL, CMD = Quartz.kCGEventFlagMaskAlternate, Quartz.kCGEventFlagMaskControl, Quartz.kCGEventFlagMaskCommand
-KEY_OPT, KEY_CTRL, KEY_A, KEY_RETURN = 58, 59, 0, 36
+OPT, SHIFT, CMD = Quartz.kCGEventFlagMaskAlternate, Quartz.kCGEventFlagMaskShift, Quartz.kCGEventFlagMaskCommand
+KEY_OPT, KEY_SHIFT, KEY_A, KEY_RETURN = 58, 56, 0, 36
 failures = []
 
 
@@ -80,9 +80,13 @@ def text_of(app):
     return None if err or value is None else str(value)
 
 
-def fixelect_windows():
+def preview_window():
+    """The Polish preview: a tall Fixelect window (the progress card is short)."""
     info = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
-    return [w for w in info if w.get("kCGWindowOwnerName") == "Fixelect" and w.get("kCGWindowLayer", 0) < 1000]
+    for w in info:
+        if w.get("kCGWindowOwnerName") == "Fixelect" and w.get("kCGWindowBounds", {}).get("Height", 0) >= 150:
+            return w
+    return None
 
 
 def open_document(name, text):
@@ -143,12 +147,13 @@ def test_polish():
     app = open_document("fixelect-polish", ROUGH)
     press(KEY_A, CMD)
     shot("polish-1-selected")
-    log("Double-tapping Control on the selected text…")
-    double_tap(CTRL, KEY_CTRL)
+    log("Double-tapping Shift on the selected text…")
+    double_tap(SHIFT, KEY_SHIFT)
     state = {"accepted": False}
 
     def accept_preview():
-        if not state["accepted"] and fixelect_windows():
+        # Return while TextEdit is still in front: Fixelect must catch it for the preview
+        if not state["accepted"] and preview_window():
             time.sleep(1.5)
             shot("polish-2-preview")
             press(KEY_RETURN)

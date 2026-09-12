@@ -28,7 +28,7 @@ DEFAULT_CONFIG = {
     "engine": "embedded",
     "trigger_mode": "double_tap",       # "double_tap" | "option_space" | "classic" | "custom"
     "hotkey_fix": "double_option",
-    "hotkey_polish": "double_control",
+    "hotkey_polish": "double_shift",
     "custom_fix": "<cmd>+<alt>+f",
     "custom_polish": "<cmd>+<alt>+p",
     "polish_style": "professional",     # see check_guard.POLISH_STYLES
@@ -52,7 +52,7 @@ def get_hotkey_keycaps(mode: str = "fix", config: dict = None) -> list:
         config = load_config()
     t_mode = config.get("trigger_mode", "double_tap")
     if t_mode == "double_tap":
-        return ["⌥", "⌥"] if mode == "fix" else ["⌃", "⌃"]
+        return ["⌥", "⌥"] if mode == "fix" else ["⇧", "⇧"]
     elif t_mode == "option_space":
         return ["⌥", "Space"] if mode == "fix" else ["⌥", "⇧", "Space"]
     elif t_mode == "classic":
@@ -70,8 +70,8 @@ def get_hotkey_keycaps(mode: str = "fix", config: dict = None) -> list:
         result = []
         for p in parts:
             result.append(mapping.get(p, p.upper()))
-        return result or (["⌥", "⌥"] if mode == "fix" else ["⌃", "⌃"])
-    return ["⌥", "⌥"] if mode == "fix" else ["⌃", "⌃"]
+        return result or (["⌥", "⌥"] if mode == "fix" else ["⇧", "⇧"])
+    return ["⌥", "⌥"] if mode == "fix" else ["⇧", "⇧"]
 
 
 def get_hotkey_label(mode: str = "fix", config: dict = None) -> str:

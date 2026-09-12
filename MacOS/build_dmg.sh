@@ -108,7 +108,7 @@ Instead of steps 2 and 3, you can paste this into Terminal:
 
 Fixelect lives in the menu bar at the top right, not in the Dock.
 Select text in any app, then double-tap Option to fix it
-or double-tap Control to polish it.
+or double-tap Shift to polish it.
 
 Help: https://github.com/Bosithonn/fixelect/issues
 EOF
