@@ -18,6 +18,8 @@ permissions:
   contents: write
 
 env:
+  # UTF-8 output on every runner (the Windows console defaults to cp1252).
+  PYTHONUTF8: '1'
   # v1.2.3 from a tag push or the manual input; empty for branch/PR builds.
   RELEASE_TAG: ${{ github.event.inputs.tag_name || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
 

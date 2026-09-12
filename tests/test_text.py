@@ -5,6 +5,9 @@ import pathlib
 import sys
 import threading
 
+# Test names include Cyrillic and Uzbek; a cp1252 console (Windows CI) can't print them
+sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / ("MacOS" if sys.platform == "darwin" else "Windows") / "tools"))
 sys.path.insert(0, str(ROOT / "shared"))
