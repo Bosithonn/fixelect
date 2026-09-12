@@ -11,6 +11,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "MacOS" / "tools"))
@@ -91,8 +92,11 @@ def t_engine_lookup(app_path=None):
         server = pathlib.Path(app_path) / "Contents" / "Frameworks" / "llama" / "llama-server"
         if not server.is_file():
             return False, f"not bundled at {server}"
-        out = subprocess.run([str(server), "--version"], capture_output=True, text=True, timeout=30)
-        return out.returncode == 0, (out.stdout or out.stderr).strip().splitlines()[-1:]
+        # The first run initialises Metal, which is slow on CI virtual machines
+        start = time.time()
+        out = subprocess.run([str(server), "--version"], capture_output=True, text=True, timeout=180)
+        last = (out.stdout or out.stderr).strip().splitlines()[-1:]
+        return out.returncode == 0, f"{last} in {time.time() - start:.1f}s"
     return True, f"llama-server: {found or 'not installed (bundled in release builds)'}"
 
 
