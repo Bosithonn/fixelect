@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 
-from config_mac import get_resource_path, load_config, get_lock_path, get_runtime_path
+from config_mac import get_resource_path, load_config, get_lock_path, get_runtime_path, log_error
 from hardware_mac import detect_mac_hardware
 from downloader_mac import resolve_model, get_bin_dir
 
@@ -191,41 +191,48 @@ class MacEmbeddedEngine:
                     return False  # caller falls back to Ollama
                 raise FileNotFoundError("The Fixelect engine is missing. Reinstall Fixelect or run `brew install llama.cpp`.")
 
-            self.port = self._free_port()
             self._close_conn()
-            cmd = [str(server_bin), "-m", str(model_path), "--host", self.host, "--port", str(self.port),
-                   "-c", str(CONTEXT_SIZE), "-np", "1", "--log-disable", "--jinja"]
-            if self.hw["is_apple_silicon"]:
-                cmd += ["-ngl", "99"]
-            else:
-                cmd += ["-t", str(max(1, (os.cpu_count() or 4) // 2))]
+            base = [str(server_bin), "-m", str(model_path), "--host", self.host,
+                    "-c", str(CONTEXT_SIZE), "-np", "1", "--log-disable", "--jinja"]
+            threads = ["-t", str(max(1, (os.cpu_count() or 4) // 2))]
+            # Metal first; if the GPU cannot start (virtual Macs, driver trouble) use the CPU.
+            attempts = [["-ngl", "99"], ["-ngl", "0"] + threads] if self.hw["is_apple_silicon"] else [threads]
             env = os.environ.copy()
             env["PATH"] = str(server_bin.parent) + os.pathsep + env.get("PATH", "")
             env["DYLD_LIBRARY_PATH"] = str(server_bin.parent) + os.pathsep + env.get("DYLD_LIBRARY_PATH", "")
             env["GGML_METAL_DISABLE_CAPTURE"] = "1"
 
-            print(f"  [Engine] Starting llama-server on :{self.port} [{self.backend_label}]")
-            self.process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                            stderr=subprocess.DEVNULL, cwd=str(server_bin.parent), env=env,
-                                            start_new_session=False)
-            self._owns_process = True
-            t0 = time.time()
-            while time.time() - t0 < timeout:
-                if self.process.poll() is not None:
-                    self._owns_process = False
-                    raise RuntimeError(f"llama-server exited with code {self.process.returncode}")
-                if self.is_healthy():
-                    print(f"  [Engine] Model loaded in {time.time() - t0:.1f}s")
-                    if self.publish:
-                        try:
-                            get_runtime_path().write_text(json.dumps(
-                                {"port": self.port, "pid": os.getpid(), "model_path": str(model_path)}))
-                        except Exception:
-                            pass
-                    return True
-                time.sleep(0.2)
-            self.stop()
-            raise TimeoutError(f"llama-server was not ready within {timeout:.0f}s")
+            for n, extra in enumerate(attempts):
+                last = n == len(attempts) - 1
+                self.port = self._free_port()
+                cmd = base + ["--port", str(self.port)] + extra
+                print(f"  [Engine] Starting llama-server on :{self.port} [{self.backend_label}] {' '.join(extra)}")
+                self.process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                                stderr=subprocess.DEVNULL, cwd=str(server_bin.parent), env=env,
+                                                start_new_session=False)
+                self._owns_process = True
+                t0 = time.time()
+                while time.time() - t0 < timeout:
+                    if self.process.poll() is not None:
+                        self._owns_process = False
+                        if last:
+                            raise RuntimeError(f"llama-server exited with code {self.process.returncode}")
+                        print("  [Engine] GPU start failed - retrying on the CPU")
+                        log_error(f"llama-server exited with code {self.process.returncode} on Metal; using the CPU")
+                        break
+                    if self.is_healthy():
+                        print(f"  [Engine] Model loaded in {time.time() - t0:.1f}s")
+                        if self.publish:
+                            try:
+                                get_runtime_path().write_text(json.dumps(
+                                    {"port": self.port, "pid": os.getpid(), "model_path": str(model_path)}))
+                            except Exception:
+                                pass
+                        return True
+                    time.sleep(0.2)
+                else:
+                    self.stop()
+                    raise TimeoutError(f"llama-server was not ready within {timeout:.0f}s")
 
     def _close_conn(self):
         if self.conn:

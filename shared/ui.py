@@ -1244,7 +1244,7 @@ class SetupWindow(_Window):
 
 class PermissionsWindow(_Window):
     def __init__(self, master, on_done):
-        super().__init__(master, "Fixelect needs Accessibility access", 540, 430, on_close=lambda: on_done(self._granted))
+        super().__init__(master, "Fixelect needs Accessibility access", 540, 480, on_close=lambda: on_done(self._granted))
         self._granted = False
         outer = tk.Frame(self.win, bg=BG, padx=px(30), pady=px(28))
         outer.pack(fill="both", expand=True)
@@ -1255,12 +1255,15 @@ class PermissionsWindow(_Window):
         steps = Card(outer, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=12)
         steps.pack(fill="x")
         for n, s in enumerate(("Click “Open System Settings”.",
-                               "Find Fixelect under Privacy & Security → Accessibility.",
-                               "Turn the switch on. This window closes by itself."), 1):
+                               "Turn on Fixelect in the Accessibility list.",
+                               "That's it. This window closes by itself."), 1):
             r = tk.Frame(steps.body, bg=SURFACE)
             r.pack(fill="x", pady=px(4))
             Pill(r, str(n), fg=ACCENT, fill=K.ACCENT_SOFT, height=22).pack(side="left", padx=(0, px(10)))
             label(r, s, "body").pack(side="left")
+        label(outer, "Fixelect is already on but this window keeps waiting? Select Fixelect in the list, "
+                     "remove it with −, then click “Open System Settings” again. macOS needs this after "
+                     "each update.", "small", TEXT_2, wrap=470).pack(fill="x", pady=(px(12), 0))
         self.state = Pill(outer, "Waiting for permission…", fg=AMBER, fill=AMBER_SOFT, dot=AMBER, height=26)
         self.state.pack(anchor="w", pady=(px(16), 0))
         row = tk.Frame(outer, bg=BG)
@@ -1271,6 +1274,12 @@ class PermissionsWindow(_Window):
         self._poll()
 
     def _open_settings(self):
+        try:
+            # Asking once puts Fixelect in the Accessibility list, so the user only flips its switch.
+            from hotkey_mac import check_accessibility_permissions
+            check_accessibility_permissions(prompt=True)
+        except Exception:
+            pass
         try:
             subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
         except Exception:

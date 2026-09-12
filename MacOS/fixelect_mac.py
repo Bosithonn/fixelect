@@ -432,19 +432,17 @@ class MacApp:
             self.hide_hud()
 
     def _esc_listener(self):
-        """Esc cancels a long job (pynput can't swallow the key; Esc is harmless in most apps)."""
-        try:
-            from pynput import keyboard
-
-            def on_press(key):
-                if key == keyboard.Key.esc:
-                    self.cancel_event.set()
-            listener = keyboard.Listener(on_press=on_press)
-            listener.daemon = True
-            listener.start()
-            return listener
-        except Exception:
+        """Esc cancels a long job. The shortcut tap watches for it (Esc still reaches the app)."""
+        listener = self.listener
+        if listener is None:
             return None
+        listener.watch_escape(self.cancel_event.set)
+
+        class _Stop:
+            @staticmethod
+            def stop():
+                listener.watch_escape(None)
+        return _Stop()
 
     def _polish_with_preview(self, text, cfg, front_app):
         from hud_mac import ask_polish

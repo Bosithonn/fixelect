@@ -44,6 +44,8 @@ jobs:
         run: python tests/test_guard.py
       - name: Text tests
         run: python tests/test_text.py
+      - name: Hotkey tests
+        run: python tests/test_hotkeys.py
       - name: Release tag matches the app version
         if: env.RELEASE_TAG != ''
         shell: bash
@@ -210,9 +212,97 @@ jobs:
             MacOS/dist/Fixelect.dmg.sha256
           if-no-files-found: error
 
+  # ---------------------------------------------------------------------------
+  # Installs the DMG just built, grants Accessibility the way a user would in
+  # System Settings (GitHub's macOS images run without SIP, so TCC.db is
+  # writable), adds a small model and checks that double-tap Option fixes and
+  # double-tap Control polishes text in TextEdit. Screenshots are published to
+  # the ci-shots-<os> branches.
+  # ---------------------------------------------------------------------------
+  e2e-macos:
+    name: End-to-end on ${{ matrix.os }}
+    needs: build-macos
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test tools
+        run: pip install pyobjc-framework-Quartz pyobjc-framework-ApplicationServices pyobjc-framework-Cocoa
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Fixelect-macOS-DMG
+          path: dmg
+
+      - name: Install Fixelect from the DMG
+        run: |
+          hdiutil attach dmg/Fixelect.dmg -nobrowse -mountpoint /Volumes/Fixelect
+          ls -la /Volumes/Fixelect
+          cp -R /Volumes/Fixelect/Fixelect.app /Applications/
+          hdiutil detach /Volumes/Fixelect
+
+      - name: Grant Accessibility
+        run: |
+          NOW=$(date +%s)
+          # Fixelect itself, plus the test's Python (it types keys and reads TextEdit)
+          PY=$(python -c "import os, sys; print(os.path.realpath(sys.executable))")
+          rows() {
+            for svc in kTCCServiceAccessibility kTCCServicePostEvent kTCCServiceListenEvent; do
+              for client in "'com.fixelect.app',0" "'/Applications/Fixelect.app/Contents/MacOS/Fixelect',1" "'$PY',1"; do
+                echo "INSERT OR REPLACE INTO access VALUES('$svc',$client,2,0,1,NULL,NULL,NULL,'UNUSED',NULL,0,$NOW,NULL,NULL,'UNUSED',$NOW);"
+              done
+            done
+          }
+          rows | sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db"
+          rows | sqlite3 "$HOME/Library/Application Support/com.apple.TCC/TCC.db"
+          sudo pkill -x tccd || true; pkill -x tccd || true
+          sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "SELECT service, client, auth_value FROM access WHERE client LIKE '%ixelect%';"
+
+      - name: Download a small model and skip onboarding
+        run: |
+          DIR="$HOME/Library/Application Support/Fixelect"
+          mkdir -p "$DIR/models"
+          curl -fsSL -o "$DIR/models/qwen2.5-1.5b-instruct-q4_k_m.gguf" \
+            https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
+          echo "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e  $DIR/models/qwen2.5-1.5b-instruct-q4_k_m.gguf" | shasum -a 256 -c
+          echo '{"model_profile": "1.5b", "onboarding_done": true, "sound_enabled": false}' > "$DIR/config.json"
+
+      - name: Start Fixelect
+        run: |
+          open -a /Applications/Fixelect.app
+          sleep 15
+          pgrep -fl "Fixelect.app/Contents/MacOS/Fixelect" || { echo "::error title=E2E::Fixelect is not running"; exit 1; }
+
+      - name: Double-tap Option and Control in TextEdit
+        run: python tests/mac_e2e.py e2e-shots
+
+      - name: Fixelect log
+        if: always()
+        run: |
+          find "$HOME/Library/Application Support/Fixelect" -name "*.log" -exec tail -n 40 {} \; 2>/dev/null || true
+          ls ~/Library/Logs/DiagnosticReports 2>/dev/null | grep -i fixelect || true
+
+      - name: Publish screenshots
+        if: always() && github.event_name != 'pull_request'
+        run: |
+          [ -d e2e-shots ] || exit 0
+          cd e2e-shots
+          git init -q && git checkout -q -b shots
+          git add . && git -c user.name=fixelect-ci -c user.email=ci@users.noreply.github.com \
+            commit -qm "E2E screenshots ${{ matrix.os }} ${{ github.sha }}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" shots:ci-shots-${{ matrix.os }}
+
   publish-release:
     name: Publish GitHub Release
-    needs: [build-windows, build-macos]
+    needs: [build-windows, build-macos, e2e-macos]
     if: github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag_name != '')
     runs-on: ubuntu-latest
     steps:
