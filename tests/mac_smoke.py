@@ -7,6 +7,7 @@ front-app detection and the bundled engine lookup.
 Run: python tests/mac_smoke.py [path/to/Fixelect.app]
 """
 
+import os
 import pathlib
 import subprocess
 import sys
@@ -25,6 +26,10 @@ def check(name, fn):
         ok, detail = False, f"{type(e).__name__}: {e}"
     results.append(ok)
     print(f"[{'PASS' if ok else 'FAIL'}] {name}" + (f"  -- {detail}" if detail else ""))
+    if not ok and os.environ.get("GITHUB_ACTIONS"):
+        # Annotations are readable without signing in, unlike the job log
+        msg = str(detail).replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+        print(f"::error title=macOS smoke: {name}::{msg[-1500:]}")
 
 
 def t_imports():
