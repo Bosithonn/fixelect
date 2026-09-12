@@ -82,19 +82,36 @@ if [ -n "${DEVELOPER_ID:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_TEAM_ID
     NOTARIZE=1
 fi
 if [ "$NOTARIZE" = 0 ]; then
-    # Unsigned builds only: macOS quarantines apps from unknown developers.
-    cat << 'EOF' > "$STAGING_DIR/First_Time_Open_Helper.command"
-#!/bin/bash
-echo "Fixelect - first-open helper for builds that are not notarized"
-if [ -d "/Applications/Fixelect.app" ]; then
-    xattr -cr /Applications/Fixelect.app 2>/dev/null || true
-    open /Applications/Fixelect.app
-else
-    echo "Drag Fixelect.app into Applications first."
-fi
-sleep 2
+    # Builds that are not notarized: Gatekeeper blocks the first open (a helper
+    # script would be blocked too), so explain the steps in plain text.
+    cat << 'EOF' > "$STAGING_DIR/How to open Fixelect.txt"
+How to open Fixelect
+====================
+
+1. Drag Fixelect onto the Applications folder in this window.
+
+2. Open Fixelect from Applications. macOS says it can't verify the app,
+   because it is not notarized by Apple yet. Click Done.
+
+3. Open System Settings > Privacy & Security, scroll down and click
+   "Open Anyway" next to Fixelect. Enter your Mac password.
+
+4. Open Fixelect again. Setup downloads the AI model (about 2 GB).
+
+5. Allow Accessibility when asked, so Fixelect can fix the text you select.
+
+
+Instead of steps 2 and 3, you can paste this into Terminal:
+
+    xattr -dr com.apple.quarantine /Applications/Fixelect.app && open /Applications/Fixelect.app
+
+
+Fixelect lives in the menu bar at the top right, not in the Dock.
+Select text in any app, then double-tap Option to fix it
+or double-tap Control to polish it.
+
+Help: https://github.com/Bosithonn/fixelect/issues
 EOF
-    chmod +x "$STAGING_DIR/First_Time_Open_Helper.command"
 fi
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
 rm -rf "$STAGING_DIR"

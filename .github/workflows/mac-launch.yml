@@ -7,8 +7,11 @@ on:
   push:
     branches: [main]
     paths: ['.github/workflows/mac-launch.yml']
-  release:
-    types: [published]
+  # A release published by the build workflow's token triggers nothing, so run
+  # after each tagged build instead (the release exists by then).
+  workflow_run:
+    workflows: ["Build & Release Fixelect"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -17,6 +20,7 @@ permissions:
 jobs:
   launch:
     name: Launch on ${{ matrix.os }}
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'v'))
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +66,7 @@ jobs:
             { echo "$name: $status"; echo "---"; cat "out_$name.txt"; } > "rep_$name.txt"
             annotate notice "${{ matrix.os }} $name" "rep_$name.txt"
           }
+          probe https --check-https
           probe setup --setup
           probe dashboard --dashboard
           probe app

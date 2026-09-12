@@ -229,6 +229,13 @@ jobs:
           find artifacts -type f \( -name "FixelectSetup.exe*" -o -name "Fixelect.dmg*" \) -exec cp {} release_assets/ \;
           ls -lh release_assets/
 
+      # docs/changes/<tag>.md, when present, goes at the top of the release notes.
+      - name: Read what's new
+        id: changes
+        run: |
+          f="docs/changes/${RELEASE_TAG}.md"
+          { echo "text<<NOTES_EOF"; if [ -f "$f" ]; then cat "$f"; fi; echo "NOTES_EOF"; } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
@@ -242,13 +249,15 @@ jobs:
 
             Fixelect fixes and polishes the text you select, in any app, with an AI model that runs entirely on your computer. No account, no cloud, no telemetry.
 
+            ${{ steps.changes.outputs.text }}
+
             ### Download
             - **Windows 10 / 11 (64-bit)**: `FixelectSetup.exe`
             - **macOS 11+ (Apple Silicon)**: `Fixelect.dmg`
 
             Each file has a `.sha256` checksum next to it. Fixelect's built-in updater verifies it automatically.
 
-            **First launch:** if Windows shows "Windows protected your PC", click **More info → Run anyway**. On a Mac, if it says Fixelect can't be opened, go to **System Settings → Privacy & Security → Open Anyway**. Builds are signed automatically once the project has signing certificates.
+            **First launch:** if Windows shows "Windows protected your PC", click **More info → Run anyway**. On a Mac, if it says Fixelect can't be opened, go to **System Settings → Privacy & Security → Open Anyway**, or paste `xattr -dr com.apple.quarantine /Applications/Fixelect.app && open /Applications/Fixelect.app` into Terminal. Builds are signed automatically once the project has signing certificates.
 
             ### Highlights
             - **Fix** (double-tap Alt / ⌥) keeps your voice; **Polish** (double-tap Ctrl / ⌃) shows a preview with Professional, Friendly, Concise, Formal and Shorter styles.

@@ -60,7 +60,17 @@ You can change both in Settings.
 
 **Windows.** Run `FixelectSetup.exe`. If Windows shows "Windows protected your PC", click **More info → Run anyway**. No administrator rights are needed.
 
-**macOS.** Open `Fixelect.dmg` and drag Fixelect to Applications. If macOS says it can't be opened, go to **System Settings → Privacy & Security → Open Anyway**, then allow Accessibility when asked.
+**macOS** (Apple Silicon)
+1. Open `Fixelect.dmg` and drag Fixelect to Applications.
+2. Open Fixelect. When macOS says it can't verify the app, click **Done**.
+3. Go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Fixelect.
+4. Open Fixelect again and allow **Accessibility** when asked. Fixelect lives in the menu bar, not the Dock.
+
+Or skip steps 2 and 3 by pasting this into Terminal:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Fixelect.app && open /Applications/Fixelect.app
+```
 
 On first launch, Fixelect downloads the AI model you choose. The recommended one, Qwen 2.5 3B, is 2 GB. Each download is checked against its official SHA-256.
 
