@@ -1,150 +1,101 @@
-# Fixelect
+<p align="center">
+  <img src="docs/banner.png" alt="Fixelect: fix and polish your writing in every app, privately" width="100%">
+</p>
 
-**Fixelect** is an ultra-fast, 100% offline, privacy-first AI desktop assistant that fixes grammar, spelling, typos, and style directly inside any app with a single global shortcut or effortless double-tap. Nothing ever leaves your machine.
+<p align="center">
+  <a href="https://github.com/Bosithonn/fixelect/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Bosithonn/fixelect?style=flat-square&color=3D7BFF&label=release"></a>
+  <a href="https://github.com/Bosithonn/fixelect/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Bosithonn/fixelect/total?style=flat-square&color=3D7BFF"></a>
+  <a href="https://github.com/Bosithonn/fixelect/actions/workflows/release.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/Bosithonn/fixelect/release.yml?branch=main&style=flat-square&label=build"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-FF5C6C?style=flat-square"></a>
+</p>
 
-Select some text anywhere — browser, email, Slack, Telegram, Notes, Microsoft Office, code editor — press your shortcut, and it is instantly replaced with the refined version.
+<p align="center">
+  <a href="https://github.com/Bosithonn/fixelect/releases/latest/download/FixelectSetup.exe"><img alt="Download for Windows" src="https://img.shields.io/badge/Download_for_Windows-3D7BFF?style=for-the-badge"></a>
+  &nbsp;
+  <a href="https://github.com/Bosithonn/fixelect/releases/latest/download/Fixelect.dmg"><img alt="Download for macOS" src="https://img.shields.io/badge/Download_for_macOS-FF5C6C?style=for-the-badge"></a>
+  <br>
+  <sub>Windows 10 / 11 (64-bit) · macOS 11+ on Apple Silicon · Free, no account</sub>
+</p>
+
+<br>
+
+Select text in any app, press a shortcut, and Fixelect fixes it in place. The AI model runs on your computer, so your writing never leaves it.
 
 ```
 Its been a long day, and i cant seem too focus on the the task.
-      ↓  Alt Alt (Win) or ⌥ ⌥ (Mac)
+                     ↓  double-tap Alt
 It's been a long day, and I can't seem to focus on the task.
 ```
 
----
+## Shortcuts
 
-## 🚀 Downloads (Latest Release)
-
-Pre-built, standalone installers are automatically generated for every release:
-
-| Platform | Format | Package | Requirements |
+| | Windows | macOS | |
 | :--- | :--- | :--- | :--- |
-| **Windows** | Portable Installer | [**FixelectSetup.exe**](https://github.com/Bosithonn/fixelect/releases/latest) | Windows 10 / 11 (64-bit) |
-| **macOS** | Drag-and-Drop DMG | [**Fixelect.dmg**](https://github.com/Bosithonn/fixelect/releases/latest) | macOS 11.0+ on Apple Silicon (M1–M4). Intel Macs: run from source. |
+| **Fix** | Double-tap `Alt` | Double-tap `⌥ Option` | Typos, spelling and grammar. Your words and voice stay. |
+| **Polish** | Double-tap `Ctrl` | Double-tap `⌃ Control` | A clearer rewrite, shown as a preview first. |
 
-Every download has a `.sha256` checksum next to it. Builds are code-signed (Windows) and notarized (macOS) when the release pipeline has signing certificates configured.
+You can change both in Settings.
 
----
+<p align="center">
+  <img src="docs/polish-preview.png" alt="The Polish preview with five styles" width="640">
+</p>
+<p align="center">
+  <img src="docs/result-card.png" alt="The result card with one-click Undo" width="298">
+</p>
 
-## ⚡ Key Capabilities
+## Why Fixelect
 
-### 1. Instant Global Triggers & Customization
-- **Effortless Double-Taps (Default on Windows & macOS)**:
-  - Double-tap `Alt` (`Alt Alt` on Windows) or `⌥ Option` (`⌥ ⌥` on Mac) → Instant Grammar & Typo Fix
-  - Double-tap `Ctrl` (`Ctrl Ctrl` on Windows) or `⌃ Control` (`⌃ ⌃` on Mac) → Polish, with a preview first
-  - `Ctrl + Alt + Q` (Windows) or the menu bar icon (Mac) → Quit
-- **Flexible Presets & Full Customization**:
-  - Double-Tap Modifiers (Fastest, 1-hand thumb triggers)
-  - `Alt + Space` / `⌥ Space` quick combos
-  - Classic 3-Key (`Ctrl + Alt + F` / `Ctrl + Alt + P`)
-  - Remap to any custom key combination anytime via the visual Settings Dashboard.
+- **Private.** Everything runs offline on your computer. No account, no cloud, no telemetry.
+- **Works everywhere.** Browsers, email, Slack, Word, Google Docs, Notion. Bold, links and fonts are kept.
+- **Your call.** Preview before replacing, and **Undo** in one click.
+- **Five polish styles.** Professional, Friendly, Concise, Formal and Shorter, plus your own note like "Use British spelling".
+- **Many languages.** English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. Uzbek (beta) with the optional Gemma 4 model.
+- **Free and open source** under the MIT License.
 
-### 2. Fix and Polish
-- **Fix**: Corrects typos, run-on words (`tobehonest` → `to be honest`), punctuation, agreement and homophones (`your/you're`, `their/there/they're`) while keeping your voice, slang, bullet points and code.
-- **Polish**: Rewrites in the style you pick — Professional, Friendly, Concise, Formal or Shorter — plus your own style note ("Use British spelling"). A preview shows the result first: Enter replaces, R tries another version, Esc cancels. A meaning guard refuses rewrites that answer, translate or change who does what.
-- **Languages**: English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. Other languages are left untouched with a clear message.
+<p align="center">
+  <img src="docs/settings.png" alt="Fixelect settings" width="560">
+</p>
 
-### 3. Feedback you can trust
-- A small card near your text shows progress and the result ("Fixed 3 words") with one-click **Undo**, and says exactly why nothing changed (nothing selected, language not supported, app turned off…).
-- **Formatting is kept**: bold, links and fonts survive in Word, Outlook, Google Docs, Gmail and Notion.
-- **Long text** is processed in chunks with a progress bar; Esc cancels.
-- **Per-app off switch**: terminals and password managers are off by default; add any app in General.
-- **Help tab** with "Why wasn't my text fixed?", an interactive first-run tutorial and "Copy diagnostics".
+## Install
 
-### 4. Local Hardware Acceleration (Zero Dependencies)
-- **Zero Cloud, Zero Subscriptions**: Powered by embedded `llama-server` running quantized GGUF models locally on `127.0.0.1`.
-- **Apple Silicon Metal**: Full GPU offloading (`-ngl 99`) on M1/M2/M3/M4 chips with sub-second response times.
-- **Windows Acceleration**: Automatic detection of NVIDIA CUDA GPU, Vulkan, and AVX2 CPU SIMD instructions.
-- **Smart Model Setup**: Built-in setup wizard downloads and switches models (0.5B to 7B), each verified against its official SHA-256.
-- **Frees memory when idle**: the model is unloaded after 10 minutes without use (configurable) and reloads in seconds.
-- **Updates**: a daily check against GitHub releases (can be turned off); Windows installs the verified update in one click.
+**Windows.** Run `FixelectSetup.exe`. If Windows shows "Windows protected your PC", click **More info → Run anyway**. No administrator rights are needed.
 
-### 5. Native Desktop Experience
-- **Windows**: Windows 11 Fluent Dark interface, Per-Monitor High-DPI V2 ClearType rendering, and system tray integration.
-- **macOS**: Native Aqua Dark SF Pro interface, menu bar status item, and guided Accessibility permissions helper.
+**macOS.** Open `Fixelect.dmg` and drag Fixelect to Applications. If macOS says it can't be opened, go to **System Settings → Privacy & Security → Open Anyway**, then allow Accessibility when asked.
 
----
+On first launch, Fixelect downloads the AI model you choose. The recommended one, Qwen 2.5 3B, is 2 GB. Each download is checked against its official SHA-256.
 
-## 🏗️ Project Architecture
+The installers aren't code-signed yet, which is why those warnings appear. Every release file has a `.sha256` checksum next to it.
 
-```
-Fixelect/
-├── .github/
-│   └── workflows/
-│       └── release.yml      # Multi-platform CI/CD for Windows .exe and macOS .dmg
-│
-├── shared/                  # Code used by both apps (one copy, no drift)
-│   ├── check_guard.py       # Prompts, guard rules, consensus, polish styles
-│   ├── languages.py         # Language detection and per-language prompts
-│   ├── chunking.py          # Long text: chunks, progress, cancel
-│   ├── richtext.py          # Keeps formatting (HTML / RTF) when replacing text
-│   ├── ui.py, ui_kit.py     # Dashboard, setup, tutorial and components
-│   ├── updater.py           # Update check and verified download
-│   ├── diagnostics.py       # "Copy diagnostics" report (never includes your text)
-│   ├── version.py           # App version and release location
-│   └── data/                # Dictionary, protected words, shorthand
-│
-├── Windows/                 # Native Windows Application
-│   ├── resources/           # Fluent dark assets, app icon, bundled engine
-│   ├── tools/               # Engine, clipboard, hotkeys, status card, tray, per-app detection
-│   ├── fixelect.py          # Main daemon & Win32 global hotkeys
-│   ├── Fixelect.spec        # PyInstaller packaging configuration
-│   ├── installer.iss        # Inno Setup 7 installer script
-│   └── requirements.txt     # Windows dependencies
-│
-├── MacOS/                   # Native macOS Application
-│   ├── resources/           # Apple ICNS icon, template menu bar icons
-│   ├── tools/               # Hotkeys, NSPasteboard, Metal engine, native status panel
-│   ├── fixelect_mac.py      # Main daemon & event tap triggers
-│   ├── Fixelect_Mac.spec    # PyInstaller bundle specification
-│   ├── build_dmg.sh         # Builds the app with its engine inside, signs, notarizes, DMG
-│   ├── entitlements.plist   # Hardened runtime permissions
-│   └── requirements.txt     # macOS dependencies
-│
-├── tests/                   # Model-free tests (CI) and accuracy benchmarks
-├── LICENSE                  # MIT License
-├── LICENSE.txt              # Attribution & license notice
-└── PRIVACY_POLICY.md        # 100% Local & Zero-Telemetry Privacy Guarantee
-```
+<details>
+<summary><b>Run from source</b></summary>
 
----
+<br>
 
-## 💻 Running from Source
+Python 3.11 or newer.
 
-### Windows
 ```bash
-cd Windows
+cd Windows          # or: cd MacOS
 pip install -r requirements.txt
-python fixelect.py
+python fixelect.py  # or: python3 fixelect_mac.py
 ```
 
-### macOS
+Tests that need no model:
+
 ```bash
-cd MacOS
-pip install -r requirements.txt
-python3 fixelect_mac.py
+python tests/test_guard.py
+python tests/test_text.py
 ```
 
-### Tests
-```bash
-python tests/test_guard.py          # guard rules (no model needed)
-python tests/test_text.py           # rich text, chunking, languages, styles
-python tests/accuracy_benchmark.py  # English accuracy with a downloaded model
-python tests/multilingual_benchmark.py
-```
+`Windows/` and `MacOS/` hold each app; `shared/` holds the code both use. Releases are built by [GitHub Actions](.github/workflows/release.yml).
 
----
+</details>
 
-## 🔒 Privacy Guarantee
+## Privacy
 
-Fixelect is engineered with strict zero-telemetry principles:
-1. **Your text never leaves your computer**: the AI model runs on local loopback (`127.0.0.1`). The only network requests are the one-time model download and an optional, anonymous daily update check — see [PRIVACY_POLICY.md](PRIVACY_POLICY.md).
-2. **No Data Retention**: Text passed through the engine is processed in RAM and never written to disk or logs.
-3. **Open Source**: Every line of code is inspectable under the MIT License.
+Fixelect only goes online to download the model you pick and, unless you turn it off, to check GitHub once a day for updates. Your text is never sent anywhere. See the [privacy policy](PRIVACY_POLICY.md).
 
----
+## License
 
-## 📄 License & Attribution
+[MIT](LICENSE) © 2026 Bositxon Erkinxonov. Third-party notices are in [LICENSE.txt](LICENSE.txt).
 
-- **Author**: Bositxon Erkinxonov
-- **License**: MIT License. See [LICENSE](LICENSE).
-
+Issues and pull requests are welcome.

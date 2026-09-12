@@ -243,11 +243,13 @@ jobs:
 
             Each file has a `.sha256` checksum next to it. Fixelect's built-in updater verifies it automatically.
 
+            **First launch:** if Windows shows "Windows protected your PC", click **More info → Run anyway**. On a Mac, if it says Fixelect can't be opened, go to **System Settings → Privacy & Security → Open Anyway**. Builds are signed automatically once the project has signing certificates.
+
             ### Highlights
             - **Fix** (double-tap Alt / ⌥) keeps your voice; **Polish** (double-tap Ctrl / ⌃) shows a preview with Professional, Friendly, Concise, Formal and Shorter styles.
             - An on-screen card shows progress and results, with one-click **Undo**.
             - Formatting (bold, links, fonts) is kept in Word, Outlook, Google Docs and Gmail.
-            - English plus Spanish, French, German, Portuguese, Italian, Russian and Ukrainian.
+            - English plus Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. Uzbek (beta) with the optional Gemma 4 model.
             - Turn Fixelect off for specific apps; terminals and password managers are off by default.
             - Frees the model's memory when idle; long text is processed in chunks you can cancel with Esc.
         env:
