@@ -100,6 +100,16 @@ def t_engine_lookup(app_path=None):
     return True, f"llama-server: {found or 'not installed (bundled in release builds)'}"
 
 
+def t_https(app_path=None):
+    if app_path:
+        exe = pathlib.Path(app_path) / "Contents" / "MacOS" / "Fixelect"
+        out = subprocess.run([str(exe), "--check-https"], capture_output=True, text=True, timeout=120)
+        return out.returncode == 0, (out.stdout or out.stderr).strip()[-300:]
+    import net
+    from downloader_mac import MODELS
+    return net.check(MODELS["3b"]["url"])
+
+
 def t_frozen(app_path):
     exe = pathlib.Path(app_path) / "Contents" / "MacOS" / "Fixelect"
     out = subprocess.run([str(exe), "--version"], capture_output=True, text=True, timeout=120)
@@ -114,6 +124,7 @@ def main():
     check("status panel and preview alert build", t_hud)
     check("front app detection", t_apps)
     check("engine lookup", lambda: t_engine_lookup(app_path))
+    check("HTTPS model download verifies certificates", lambda: t_https(app_path))
     if app_path:
         check("frozen app starts (--version)", lambda: t_frozen(app_path))
     print(f"\n{sum(results)}/{len(results)} macOS smoke checks passed")

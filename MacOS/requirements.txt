@@ -6,4 +6,6 @@ pyobjc-core>=9.0
 pyobjc-framework-Cocoa>=9.0
 pyobjc-framework-Quartz>=9.0
 pyobjc-framework-ApplicationServices>=9.0
+truststore>=0.9.1
+certifi>=2024.2.2
 pyinstaller>=6.0.0

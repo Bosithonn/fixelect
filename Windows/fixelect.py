@@ -1232,6 +1232,13 @@ def main():
         print(APP_VERSION)
         return
 
+    if _pop_flag("--check-https"):  # CI: can the frozen app verify HTTPS (model download)?
+        import net
+        from downloader import MODELS as _models
+        ok, detail = net.check(_models["3b"]["url"])
+        print(detail)
+        sys.exit(0 if ok else 1)
+
     if _pop_flag("--download"):
         from downloader import download_model
         download_model(profile=load_config().get("model_profile", "3b"))

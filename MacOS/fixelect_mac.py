@@ -688,6 +688,11 @@ def main():
     if "--version" in args:
         print(APP_VERSION)
         return
+    if "--check-https" in args:  # CI: can the frozen app verify HTTPS (model download)?
+        import net
+        ok, detail = net.check(MODELS["3b"]["url"])
+        print(detail)
+        sys.exit(0 if ok else 1)
     page = next((a.split("=", 1)[1] for a in args if a.startswith("--page=")), None)
     for kind in ("dashboard", "setup", "permissions"):
         if f"--{kind}" in args:

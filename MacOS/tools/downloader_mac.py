@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.request
 
+import net
 from config_mac import get_models_dir, get_config_dir
 
 MODELS = {
@@ -202,7 +203,7 @@ def download_model(profile: str = "3b", progress_callback=None, cancel_event=Non
     if start_byte:
         headers["Range"] = f"bytes={start_byte}-"
     try:
-        response = urllib.request.urlopen(urllib.request.Request(spec["url"], headers=headers), timeout=30)
+        response = net.urlopen(urllib.request.Request(spec["url"], headers=headers), timeout=30)
     except urllib.error.HTTPError as e:
         if e.code == 416 and start_byte:
             part_path.unlink(missing_ok=True)
@@ -282,7 +283,7 @@ def fetch_metal_engine(progress_callback=None) -> pathlib.Path | None:
         import tarfile
         req = urllib.request.Request(ENGINE_URL, headers={"User-Agent": "Fixelect-macOS/1.1"})
         digest = hashlib.sha256()
-        with urllib.request.urlopen(req, timeout=60) as resp, open(archive, "wb") as out:
+        with net.urlopen(req, timeout=60) as resp, open(archive, "wb") as out:
             total = int(resp.headers.get("Content-Length", 0) or 0)
             done = 0
             while True:

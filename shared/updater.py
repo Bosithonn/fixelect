@@ -14,6 +14,7 @@ import re
 import time
 import urllib.request
 
+import net
 from version import APP_VERSION, RELEASES_API, RELEASES_URL
 
 CHECK_INTERVAL = 20 * 3600
@@ -27,7 +28,7 @@ def parse_version(tag):
 def _get(url, timeout=10):
     req = urllib.request.Request(url, headers={"User-Agent": f"Fixelect/{APP_VERSION}",
                                                "Accept": "application/vnd.github+json"})
-    return urllib.request.urlopen(req, timeout=timeout)
+    return net.urlopen(req, timeout=timeout)
 
 
 def check(timeout=10):

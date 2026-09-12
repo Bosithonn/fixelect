@@ -11,6 +11,8 @@ import time
 import urllib.error
 import urllib.request
 
+import net
+
 MODELS = {
     "3b": {
         "name": "Qwen 2.5 3B — High Quality & Nuance",
@@ -224,7 +226,7 @@ def download_model(profile="3b", progress_callback=None, cancel_event=None):
     req = urllib.request.Request(spec["url"], headers=headers)
     chunk_size = 1024 * 1024
     try:
-        response = urllib.request.urlopen(req, timeout=30)
+        response = net.urlopen(req, timeout=30)
     except urllib.error.HTTPError as e:
         if e.code == 416 and initial_bytes:  # stale/complete partial: start over
             part_path.unlink(missing_ok=True)
