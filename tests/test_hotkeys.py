@@ -1,12 +1,13 @@
 """Model-free tests for the macOS shortcut logic (double-tap and key combos).
 
 The Quartz event tap only exists on macOS; this drives the listener's key
-handlers directly, so it runs everywhere. Run: python tests/test_hotkeys.py
+handlers directly with a fake clock, so it runs everywhere and never depends
+on how fast the machine is. Run: python tests/test_hotkeys.py
 """
 
+import os
 import pathlib
 import sys
-import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "MacOS" / "tools"))
@@ -15,6 +16,23 @@ sys.path.insert(0, str(ROOT / "shared"))
 import hotkey_mac as H  # noqa: E402
 
 OPT, CTRL, CMD, SHIFT = H._OPT, H._CTRL, H._CMD, H._SHIFT
+
+
+class Clock:
+    """Stands in for the time module inside hotkey_mac."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+CLOCK = Clock()
+H.time = CLOCK
 
 
 def make(mode="double_tap", **cfg):
@@ -28,9 +46,9 @@ def make(mode="double_tap", **cfg):
 
 def tap(lst, bit, hold=0.05, gap=0.10):
     lst._on_flags(bit)
-    time.sleep(hold)
+    CLOCK.sleep(hold)
     lst._on_flags(0)
-    time.sleep(gap)
+    CLOCK.sleep(gap)
 
 
 def t_double_option():
@@ -93,12 +111,9 @@ def t_mixed_modifiers():
 
 def t_option_with_control_held():
     lst, fired = make()
-    lst._on_flags(CTRL)
-    lst._on_flags(CTRL | OPT)
-    lst._on_flags(CTRL)
-    lst._on_flags(CTRL | OPT)
-    lst._on_flags(CTRL)
-    lst._on_flags(0)
+    for flags in (CTRL, CTRL | OPT, CTRL, CTRL | OPT, CTRL, 0):
+        lst._on_flags(flags)
+        CLOCK.sleep(0.05)
     return fired == [], fired
 
 
@@ -153,9 +168,14 @@ def main():
     tests = [(n[2:].replace("_", " "), f) for n, f in globals().items() if n.startswith("t_")]
     passed = 0
     for name, fn in tests:
-        ok, got = fn()
+        try:
+            ok, got = fn()
+        except Exception as e:  # a crash is a failure, not an abort
+            ok, got = False, f"{type(e).__name__}: {e}"
         passed += ok
         print(f"[{'PASS' if ok else 'FAIL'}] {name}" + ("" if ok else f"\n        got: {got!r}"))
+        if not ok and os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=Hotkey test: {name}::{got!r}")
     print(f"\n{passed}/{len(tests)} hotkey tests passed")
     return passed == len(tests)
 
