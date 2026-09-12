@@ -1,9 +1,10 @@
-================================================================================
+========================================================
 FIXELECT SOFTWARE LICENSE & TERMS OF USE
-================================================================================
+========================================================
 
-Fixelect - Instant, Zero-Damage Offline Windows Grammar & Polish Tool
-Copyright (c) 2026 Bositxon Erkinxonov. All rights reserved.
+Fixelect - offline grammar fixes and polish for Windows and macOS
+Copyright (c) 2026 Bositxon Erkinxonov
+Licensed under the MIT License.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -32,20 +33,22 @@ THE USER ACKNOWLEDGES THAT ARTIFICIAL INTELLIGENCE AND MACHINE LEARNING
 MODELS CAN MAKE ERRORS OR PRODUCE UNINTENDED TEXT OUTPUTS. THE USER ASSUMES
 FULL RESPONSIBILITY FOR REVIEWING ANY TEXT MODIFIED BY FIXELECT.
 
-================================================================================
+========================================================
 PRIVACY GUARANTEE
-================================================================================
+========================================================
 
-1. 100% OFFLINE & LOCAL: Fixelect performs all grammar correction, text
-   processing, and language model inference entirely on your local hardware.
+1. ON-DEVICE: Fixelect performs all grammar correction, text processing and
+   language model inference entirely on your own computer.
 2. ZERO TELEMETRY: Fixelect does not collect, store, transmit, or log your
    keystrokes, clipboard content, selected text, or personal information.
-3. NO CLOUD DEPENDENCY: After the initial optional model download, Fixelect
-   operates with zero network connections. Your writing never leaves your PC.
+3. YOUR WRITING NEVER LEAVES YOUR COMPUTER. Fixelect only connects to the
+   internet to download a model you choose and, unless you turn it off in
+   Settings, to ask GitHub once a day whether an update exists. See
+   PRIVACY_POLICY.md for details.
 
-================================================================================
+========================================================
 THIRD-PARTY NOTICES & OPEN SOURCE ATTRIBUTIONS
-================================================================================
+========================================================
 
 Fixelect bundles, interacts with, or utilizes the following open-source projects:
 
@@ -88,4 +91,4 @@ Fixelect bundles, interacts with, or utilizes the following open-source projects
 9. Uzbek word list (uz_words.txt)
    Derived from the uz-crawl corpus by Tahrirchi (tahrirchi/uz-crawl).
    Licensed under the Apache License, Version 2.0.
-================================================================================
+========================================================
