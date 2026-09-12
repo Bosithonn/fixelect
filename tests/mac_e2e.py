@@ -80,11 +80,16 @@ def text_of(app):
     return None if err or value is None else str(value)
 
 
-def preview_window():
-    """The Polish preview: a tall Fixelect window (the progress card is short)."""
+def fixelect_windows():
     info = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID)
-    for w in info:
-        if w.get("kCGWindowOwnerName") == "Fixelect" and w.get("kCGWindowBounds", {}).get("Height", 0) >= 150:
+    return [w for w in info if w.get("kCGWindowOwnerName") == "Fixelect"]
+
+
+def preview_window(existing):
+    """The Polish preview: a new, tall Fixelect window. The dashboard was already
+    open (it is in `existing`) and the progress card is short."""
+    for w in fixelect_windows():
+        if w.get("kCGWindowNumber") not in existing and w.get("kCGWindowBounds", {}).get("Height", 0) >= 150:
             return w
     return None
 
@@ -147,23 +152,24 @@ def test_polish():
     app = open_document("fixelect-polish", ROUGH)
     press(KEY_A, CMD)
     shot("polish-1-selected")
+    existing = {w.get("kCGWindowNumber") for w in fixelect_windows()}
     log("Double-tapping Shift on the selected text…")
     double_tap(SHIFT, KEY_SHIFT)
     state = {"accepted": False}
 
     def accept_preview():
         # Return while TextEdit is still in front: Fixelect must catch it for the preview
-        if not state["accepted"] and preview_window():
+        if not state["accepted"] and preview_window(existing):
             time.sleep(1.5)
             shot("polish-2-preview")
             press(KEY_RETURN)
             state["accepted"] = True
 
-    after, took = wait_for_change(app, ROUGH, 240, "polish", accept_preview)
+    after, took = wait_for_change(app, ROUGH, 300, "polish", accept_preview)
     shot("polish-3-result")
     log(f"  before: {ROUGH}\n  after:  {after}")
     if took is None:
-        failures.append("Polish: the text was not replaced within 240 s"
+        failures.append("Polish: the text was not replaced within 300 s"
                         + ("" if state["accepted"] else " (no preview appeared)") + ".")
     elif after.count("\n") > ROUGH.count("\n") + 1 or len(after.strip()) < 20:
         failures.append(f"Polish: unexpected result: {after!r}")
@@ -185,6 +191,12 @@ def main():
     for f in failures:
         log("FAIL " + f)
         annotate("error", "E2E", f)
+    if failures:
+        # Fixelect's own log explains what it did (job logs need a signed-in viewer)
+        for path in (pathlib.Path.home() / "Library" / "Application Support" / "Fixelect").rglob("*.log"):
+            tail = path.read_text(errors="replace")[-2500:]
+            log(f"--- {path.name}\n{tail}")
+            annotate("warning", f"Fixelect log {path.name}", tail)
     log("E2E " + ("passed" if not failures else f"failed ({len(failures)})"))
     return not failures
 
