@@ -12,10 +12,13 @@
 <p align="center">
   <a href="https://github.com/Bosithonn/fixelect/releases/latest/download/FixelectSetup.exe"><img alt="Download for Windows" src="https://img.shields.io/badge/Download_for_Windows-3D7BFF?style=for-the-badge"></a>
   &nbsp;
-  <a href="https://github.com/Bosithonn/fixelect/releases/latest/download/Fixelect.dmg"><img alt="Download for macOS" src="https://img.shields.io/badge/Download_for_macOS-FF5C6C?style=for-the-badge"></a>
+  <a href="https://github.com/Bosithonn/fixelect/releases/latest/download/Fixelect.dmg"><img alt="Download for macOS (preview)" src="https://img.shields.io/badge/macOS_preview-FF5C6C?style=for-the-badge"></a>
   <br>
-  <sub>Windows 10 / 11 (64-bit) · macOS 11+ on Apple Silicon · Free, no account</sub>
+  <sub>Windows 10 / 11 (64-bit) · macOS 11+ on Apple Silicon (preview) · Free, no account</sub>
 </p>
+
+> [!WARNING]
+> **The macOS version is a work in progress and not ready for everyday use yet.** It installs and opens, but we are still fixing major problems. The Windows version is the stable one. If you try it on a Mac, please [report what goes wrong](https://github.com/Bosithonn/fixelect/issues).
 
 <br>
 
@@ -60,7 +63,7 @@ You can change both in Settings.
 
 **Windows.** Run `FixelectSetup.exe`. If Windows shows "Windows protected your PC", click **More info → Run anyway**. No administrator rights are needed.
 
-**macOS** (Apple Silicon)
+**macOS** (Apple Silicon, preview: not ready for everyday use yet)
 1. Open `Fixelect.dmg` and drag Fixelect to Applications.
 2. Open Fixelect. When macOS says it can't verify the app, click **Done**.
 3. Go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Fixelect.
