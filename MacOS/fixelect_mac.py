@@ -245,6 +245,7 @@ class MacApp:
                              actions=[("Help", lambda: self.open_window("dashboard", "Help"))], timeout=7000)
 
     def trigger(self, mode):
+        log_error(f"shortcut received: {mode}")
         self.jobs.put((mode, None, time.time()))
 
     # -- clipboard restore ------------------------------------------------------

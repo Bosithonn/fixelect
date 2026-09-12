@@ -36,10 +36,27 @@ except ImportError:  # pragma: no cover - not macOS
     _has_quartz = False
 
 try:
-    from config_mac import load_config
+    from AppKit import NSEvent
+except ImportError:  # pragma: no cover - not macOS
+    NSEvent = None
+
+try:
+    from config_mac import load_config, log_error
 except ImportError:  # pragma: no cover
     def load_config():
         return {"trigger_mode": "double_tap"}
+
+    def log_error(message):
+        pass
+
+
+def _event_time(event) -> float:
+    """When the key really moved (seconds since boot). Timing taps by the event's own
+    time, not by when our callback ran, keeps the double-tap reliable on a busy Mac."""
+    try:
+        return float(NSEvent.eventWithCGEvent_(event).timestamp())
+    except Exception:
+        return time.monotonic()
 
 _SHIFT, _CTRL, _OPT, _CMD = 0x20000, 0x40000, 0x80000, 0x100000   # kCGEventFlagMask*
 _MODS = _SHIFT | _CTRL | _OPT | _CMD
@@ -153,17 +170,19 @@ class _KeyTap:
             if etype in (Quartz.kCGEventTapDisabledByTimeout, Quartz.kCGEventTapDisabledByUserInput):
                 if self.tap is not None:
                     Quartz.CGEventTapEnable(self.tap, True)
+                log_error(f"keyboard tap disabled by macOS ({etype}); re-enabled")
                 return event
             if Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceUnixProcessID) == self._pid:
                 return event   # our own Cmd+C / Cmd+V
+            flags, ts = int(Quartz.CGEventGetFlags(event)), _event_time(event)
             if etype == Quartz.kCGEventFlagsChanged:
-                self.on_flags(int(Quartz.CGEventGetFlags(event)))
+                self.on_flags(flags, ts)
             elif etype in _MOUSE_DOWN:
-                self.on_key(-1, int(Quartz.CGEventGetFlags(event)), False)   # a click, e.g. ⇧-click
+                self.on_key(-1, flags, False, ts)   # a click, e.g. ⇧-click
             elif etype == Quartz.kCGEventKeyDown:
                 code = int(Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode))
                 repeat = bool(Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventAutorepeat))
-                if self.on_key(code, int(Quartz.CGEventGetFlags(event)), repeat):
+                if self.on_key(code, flags, repeat, ts):
                     return None   # a Fixelect shortcut: don't also type it into the app
         except Exception:
             pass
@@ -215,6 +234,7 @@ class MacHotkeyListener:
         self._escape = None
         self._capture = None
         self._watchdog = None
+        self._tap_ok = None
 
     # -- public API -------------------------------------------------------------
 
@@ -291,11 +311,15 @@ class MacHotkeyListener:
             print("  ! Quartz is not available - global triggers unavailable")
             return False
         self._keytap = _KeyTap(self._on_flags, self._on_key)
-        if self._keytap.start():
+        ok = self._keytap.start()
+        if ok:
             self._flags = 0
-            return True
-        self._keytap = None
-        return False
+        else:
+            self._keytap = None
+        if ok != self._tap_ok:     # log changes only; the watchdog retries every few seconds
+            self._tap_ok = ok
+            log_error("keyboard tap active" if ok else "keyboard tap unavailable - waiting for Accessibility")
+        return ok
 
     def _close_tap(self):
         if self._keytap is not None:
@@ -311,26 +335,28 @@ class MacHotkeyListener:
                     return
                 if self._keytap is not None and self._keytap.healthy():
                     continue
+                if self._keytap is not None:
+                    log_error("keyboard tap stopped working - recreating it")
                 self._close_tap()
                 if self._open_tap():
                     print("  [Fixelect] Keyboard shortcuts are active.")
 
     # -- key handling (called on the tap thread: keep it quick) -----------------
 
-    def _on_flags(self, flags):
+    def _on_flags(self, flags, ts=None):
         pressed = flags & ~self._flags
         released = self._flags & ~flags
         self._flags = flags
         if self._suspended or not self._double_tap:
             return
-        now = time.monotonic()
+        now = time.monotonic() if ts is None else ts
         for bit, tap, cb in ((_OPT, self._opt, self.on_fix), (_SHIFT, self._shift, self.on_polish)):
             if pressed & bit:
                 if tap.down_at == 0.0 or now - tap.down_at > self.STALE_PRESS:
                     tap.down_at = now
                 tap.spoiled = bool(flags & _MODS & ~bit)   # held together with another modifier
             elif released & bit:
-                if self._register(tap):
+                if self._register(tap, now):
                     self._fire(cb)
             elif pressed & _MODS:
                 if tap.down_at:
@@ -338,7 +364,7 @@ class MacHotkeyListener:
                 else:
                     tap.last_tap_at = 0.0    # another modifier between taps breaks the sequence
 
-    def _on_key(self, code, flags, repeat) -> bool:
+    def _on_key(self, code, flags, repeat, ts=None) -> bool:
         capture = self._capture
         if capture is not None and not repeat:
             try:
@@ -362,8 +388,7 @@ class MacHotkeyListener:
             self._fire(cb)
         return True
 
-    def _register(self, tap) -> bool:
-        now = time.monotonic()
+    def _register(self, tap, now) -> bool:
         clean = tap.down_at and not tap.spoiled and (now - tap.down_at) <= self.TAP_MAX_HOLD
         tap.down_at, tap.spoiled = 0.0, False
         if not clean:

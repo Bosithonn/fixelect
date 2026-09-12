@@ -190,6 +190,22 @@ def t_escape():
     return fired == ["esc"], fired
 
 
+def t_late_callbacks_use_event_time():
+    lst, fired = make()                  # the Mac was busy: all callbacks ran at the same moment,
+    base = CLOCK.now + 50                # but the keys were pressed 80 ms apart
+    for i, flags in enumerate((OPT, 0, OPT, 0)):
+        lst._on_flags(flags, ts=base + i * 0.08)
+    return fired == ["fix"], fired
+
+
+def t_event_time_still_rejects_slow_taps():
+    lst, fired = make()
+    base = CLOCK.now + 50
+    for ts, flags in ((0.0, OPT), (0.05, 0), (0.9, OPT), (0.95, 0)):
+        lst._on_flags(flags, ts=base + ts)
+    return fired == [], fired
+
+
 def t_capture_keys():
     lst, fired = make("classic")
     seen = []
