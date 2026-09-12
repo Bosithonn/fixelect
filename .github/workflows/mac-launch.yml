@@ -1,0 +1,75 @@
+name: macOS launch check
+
+# Installs the released Fixelect.dmg the way a user would and launches it on
+# current macOS versions. Results are posted as annotations (readable without
+# signing in, unlike job logs).
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/mac-launch.yml']
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    name: Launch on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Install the released DMG
+        run: |
+          curl -fsSL -o Fixelect.dmg https://github.com/Bosithonn/fixelect/releases/latest/download/Fixelect.dmg
+          hdiutil attach Fixelect.dmg -nobrowse -mountpoint /Volumes/Fixelect
+          cp -R /Volumes/Fixelect/Fixelect.app /Applications/
+          hdiutil detach /Volumes/Fixelect
+
+      - name: Inspect and launch
+        shell: bash {0}
+        run: |
+          APP=/Applications/Fixelect.app
+          BIN=$APP/Contents/MacOS/Fixelect
+          annotate() {  # level title file
+            python3 - "$1" "$2" "$3" <<'EOF'
+          import sys
+          level, title, path = sys.argv[1:]
+          t = open(path, errors="replace").read()[-3500:]
+          print(f"::{level} title={title}::" + t.replace("%", "%25").replace("\r", "").replace("\n", "%0A"))
+          EOF
+          }
+
+          {
+            sw_vers; uname -m
+            file "$BIN"
+            echo "--- codesign"; codesign --verify --deep --strict --verbose=2 "$APP" 2>&1
+            echo "--- gatekeeper"; spctl --assess --type execute -vv "$APP" 2>&1
+          } > inspect.txt 2>&1
+          annotate notice "${{ matrix.os }} inspect" inspect.txt
+
+          probe() {  # name, args...
+            name=$1; shift
+            "$BIN" "$@" > "out_$name.txt" 2>&1 &
+            pid=$!
+            sleep 25
+            if kill -0 $pid 2>/dev/null; then status="still running after 25 s"; else wait $pid; status="exited with code $?"; fi
+            pkill -f "$BIN" 2>/dev/null; sleep 2
+            { echo "$name: $status"; echo "---"; cat "out_$name.txt"; } > "rep_$name.txt"
+            annotate notice "${{ matrix.os }} $name" "rep_$name.txt"
+          }
+          probe setup --setup
+          probe dashboard --dashboard
+          probe app
+
+          for f in ~/Library/Logs/DiagnosticReports/*ixelect* /Library/Logs/DiagnosticReports/*ixelect*; do
+            [ -f "$f" ] && head -c 3500 "$f" > crash.txt && annotate warning "${{ matrix.os }} crash report" crash.txt
+          done
+          find ~/Library/Application\ Support/Fixelect -name "*.log" 2>/dev/null | while read -r f; do
+            tail -c 3500 "$f" > applog.txt && annotate notice "${{ matrix.os }} app log" applog.txt
+          done
+          exit 0
