@@ -61,7 +61,12 @@ You can change both in Settings.
 
 ## Install
 
-**Windows.** Run `FixelectSetup.exe`. If Windows shows "Windows protected your PC", click **More info → Run anyway**. No administrator rights are needed.
+**Windows** (10 / 11, 64-bit)
+1. Click **Download for Windows**. Fixelect is new and not code-signed yet, so Edge may say *"FixelectSetup.exe isn't commonly downloaded"*. Point at the download, click **⋯** → **Keep** → **Show more** → **Keep anyway**. In Chrome, click **Keep**.
+2. Open `FixelectSetup.exe`. If Windows says *"Windows protected your PC"*, click **More info** → **Run anyway**.
+3. Follow the installer. No administrator rights are needed.
+
+`Fixelect.dmg` is the Mac version; Windows can't open it.
 
 **macOS** (Apple Silicon, preview: not ready for everyday use yet)
 1. Open `Fixelect.dmg` and drag Fixelect to Applications.
