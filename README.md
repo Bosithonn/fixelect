@@ -36,6 +36,7 @@ It's been a long day, and I can't seem to focus on the task.
 | :--- | :--- | :--- | :--- |
 | **Fix** | Double-tap `Alt` | Double-tap `⌥ Option` | Typos, spelling and grammar. Your words and voice stay. |
 | **Polish** | Double-tap `Ctrl` | Double-tap `⇧ Shift` | A clearer rewrite, shown as a preview first. |
+| **Quick actions** | `Ctrl + Alt + Space` | `⌃ ⌥ Space` | A menu: **Translate**, other Polish styles and **your own actions**. |
 
 You can change both in Settings.
 
@@ -51,6 +52,7 @@ You can change both in Settings.
 - **Private.** Everything runs offline on your computer. No account, no cloud, no telemetry.
 - **Works everywhere.** Browsers, email, Slack, Word, Google Docs, Notion. Bold, links and fonts are kept.
 - **Your call.** Preview before replacing, and **Undo** in one click.
+- **Translate and your own actions.** One shortcut opens a menu: translate into another language, or run actions you write yourself, like "Bullet points", "Summarize" or "Reply politely". All offline.
 - **Five polish styles.** Professional, Friendly, Concise, Formal and Shorter, plus your own note like "Use British spelling".
 - **Many languages.** English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. Uzbek (beta) with the optional Gemma 4 model.
 - **Free and open source** under the MIT License.

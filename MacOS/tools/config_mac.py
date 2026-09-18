@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
     "hotkey_polish": "double_shift",
     "custom_fix": "<cmd>+<alt>+f",
     "custom_polish": "<cmd>+<alt>+p",
+    "menu_hotkey": "<ctrl>+<alt>+<space>",   # quick-action menu (Fix, Polish, Translate, your actions)
     "polish_style": "professional",     # see check_guard.POLISH_STYLES
     "custom_instruction": "",           # the writer's own style note for Polish
     "polish_preview": True,             # show Polish results before replacing
@@ -80,6 +81,20 @@ def get_hotkey_label(mode: str = "fix", config: dict = None) -> str:
     if len(caps) == 2 and caps[0] == caps[1]:
         return f"{caps[0]} {caps[1]}"
     return "".join(caps)
+
+
+def get_menu_keycaps(config: dict = None) -> list:
+    """Key caps of the quick-action menu shortcut, e.g. ['⌃', '⌥', 'Space']."""
+    raw = (config if config is not None else load_config()).get("menu_hotkey") or "<ctrl>+<alt>+<space>"
+    names = {"cmd": "⌘", "command": "⌘", "alt": "⌥", "option": "⌥", "opt": "⌥", "ctrl": "⌃",
+             "control": "⌃", "shift": "⇧", "space": "Space"}
+    tokens = [t.strip().lower().strip("<>") for t in raw.replace("+", " ").split() if t.strip()]
+    return [names.get(t, t.upper()) for t in tokens]
+
+
+def get_menu_label(config: dict = None) -> str:
+    caps = get_menu_keycaps(config)
+    return "".join(caps[:-1]) + (caps[-1] if caps else "")
 
 
 def get_config_dir() -> pathlib.Path:

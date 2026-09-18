@@ -507,3 +507,170 @@ class PolishPreview:
             self.win.destroy()
         except tk.TclError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Quick-action menu (Ctrl+Alt+Space)
+# ---------------------------------------------------------------------------
+
+class ActionMenu:
+    """Fix, Polish, Translate and the user's own actions in one keyboard-first list.
+
+    1-9 or ↑/↓ + Enter choose, → opens a submenu, ← / Backspace go back, Esc or a
+    click elsewhere closes. `on_choice(item | None)` is called once, on the UI
+    thread. Like the preview it takes focus; the app gives it back before pasting."""
+
+    WIDTH = 320
+    ROW = 30
+
+    def __init__(self, root, items, submenu, on_choice):
+        self.root, self.submenu, self.on_choice = root, submenu, on_choice
+        self.stack = [("Fixelect", list(items))]
+        self.index = 0
+        self.alive = True
+        self._armed = False
+        self.rows = []
+
+        self.win = tk.Toplevel(root, bg=_KEY)
+        self.win.withdraw()
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        try:
+            self.win.attributes("-transparentcolor", _KEY)
+        except tk.TclError:
+            pass
+        self.canvas = tk.Canvas(self.win, bg=_KEY, highlightthickness=0, bd=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.body = tk.Frame(self.canvas, bg=SURFACE)
+        self.canvas.create_window(px(10), px(10), window=self.body, anchor="nw", tags="body")
+
+        for seq, fn in (("<Up>", lambda e: self.move(-1)), ("<Down>", lambda e: self.move(1)),
+                        ("<Return>", lambda e: self.choose(self.index)),
+                        ("<KP_Enter>", lambda e: self.choose(self.index)),
+                        ("<Right>", lambda e: self.choose(self.index)),
+                        ("<Left>", lambda e: self.back()), ("<BackSpace>", lambda e: self.back()),
+                        ("<Escape>", lambda e: self.cancel())):
+            self.win.bind(seq, fn)
+        self.win.bind("<KeyPress>", self._key)
+        self.win.bind("<FocusIn>", lambda e: setattr(self, "_armed", True))
+        self.win.bind("<FocusOut>", lambda e: self.win.after(200, self._focus_lost))
+        self._render()
+
+    def _key(self, e):
+        if 49 <= e.keycode <= 57:        # 1-9, any keyboard layout
+            self.choose(e.keycode - 49)
+        elif 97 <= e.keycode <= 105:     # keypad 1-9
+            self.choose(e.keycode - 97)
+
+    def _render(self):
+        for child in self.body.winfo_children():
+            child.destroy()
+        title, items = self.stack[-1]
+        label(self.body, title, "small_b", TEXT_2).pack(fill="x", padx=px(10), pady=(px(4), px(6)))
+        self.rows = []
+        for i, item in enumerate(items):
+            row = tk.Frame(self.body, bg=SURFACE, height=px(self.ROW), width=px(self.WIDTH - 20))
+            row.pack(fill="x")
+            row.pack_propagate(False)
+            parts = [row, label(row, str(i + 1) if i < 9 else "", "small", TEXT_3),
+                     label(row, item["label"], "body", TEXT)]
+            parts[1].pack(side="left", padx=(px(12), px(10)))
+            parts[2].pack(side="left")
+            if self.submenu(item):
+                arrow = label(row, "›", "body_b", TEXT_3)
+                arrow.pack(side="right", padx=px(12))
+                parts.append(arrow)
+            for w in parts:
+                w.bind("<Button-1>", lambda e, i=i: self.choose(i))
+                w.bind("<Enter>", lambda e, i=i: self._hover(i))
+            self.rows.append(parts)
+        hint = "1–9 or ↑↓ Enter  ·  " + ("← back  ·  " if len(self.stack) > 1 else "") + "Esc close"
+        label(self.body, hint, "caption", TEXT_3).pack(fill="x", padx=px(10), pady=(px(8), px(4)))
+        self._paint()
+        self._fit()
+
+    def _paint(self):
+        for i, parts in enumerate(self.rows):
+            bg = K.ACCENT_SOFT if i == self.index else SURFACE
+            for w in parts:
+                w.configure(bg=bg)
+
+    def _hover(self, i):
+        if i != self.index:
+            self.index = i
+            self._paint()
+
+    def move(self, step):
+        if self.rows:
+            self.index = (self.index + step) % len(self.rows)
+            self._paint()
+
+    def present(self, anchor=None):
+        self._anchor = anchor or caret_point()
+        self._fit()
+        self.win.deiconify()
+        self.win.lift()
+        force_foreground(_frame(self.win))
+        self.win.focus_force()
+
+    def _fit(self):
+        if not self.alive:
+            return
+        self.win.update_idletasks()
+        bw = px(self.WIDTH)
+        bh = self.body.winfo_reqheight() + px(20)
+        self.canvas.itemconfigure("body", width=bw - px(20))
+        self.canvas.configure(width=bw, height=bh)
+        draw_round_rect(self.canvas, 0, 0, bw, bh, px(12), SURFACE, outline=BORDER_STRONG, bg=_KEY, tag="bg")
+        x, y, exact = getattr(self, "_anchor", None) or caret_point()
+        left, top, right, bottom = work_area(x, y)
+        gx = min(max(left + px(8), x - px(24)), right - bw - px(8))
+        gy = y + px(10) if exact else y + px(22)
+        if gy + bh > bottom - px(8):
+            gy = max(top + px(8), y - bh - px(34))
+        self.win.geometry(f"{bw}x{bh}+{gx}+{gy}")
+
+    def _focus_lost(self):
+        # A click in another window closes the menu (only once it had focus).
+        if self.alive and self._armed and self.win.focus_get() is None:
+            self.cancel()
+
+    def choose(self, i):
+        if not self.alive:
+            return
+        items = self.stack[-1][1]
+        if not 0 <= i < len(items):
+            return
+        sub = self.submenu(items[i])
+        if sub:
+            self.stack.append((items[i]["label"].rstrip("…"), sub))
+            self.index = 0
+            self._render()
+            return
+        self._close()
+        self.on_choice(items[i])
+
+    def back(self):
+        if not self.alive:
+            return
+        if len(self.stack) > 1:
+            self.stack.pop()
+            self.index = 0
+            self._render()
+        else:
+            self.cancel()
+
+    def cancel(self):
+        if not self.alive:
+            return
+        self._close()
+        self.on_choice(None)
+
+    def _close(self):
+        if not self.alive:
+            return
+        self.alive = False
+        try:
+            self.win.destroy()
+        except tk.TclError:
+            pass

@@ -48,6 +48,8 @@ jobs:
         run: |
           python tests/test_hotkeys.py
           python tests/test_hotkeys_win.py
+      - name: Quick action tests
+        run: python tests/test_actions.py
       - name: Release tag matches the app version
         if: env.RELEASE_TAG != ''
         shell: bash
@@ -302,9 +304,78 @@ jobs:
             commit -qm "E2E screenshots ${{ matrix.os }} ${{ github.sha }}"
           git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" shots:ci-shots-${{ matrix.os }}
 
+  # ---------------------------------------------------------------------------
+  # Installs FixelectSetup.exe silently like a user, adds a small model and uses
+  # Fix, Polish, Translate and a custom action in Notepad. Screenshots go to the
+  # ci-shots-windows branch.
+  # ---------------------------------------------------------------------------
+  e2e-windows:
+    name: End-to-end on Windows
+    needs: build-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test tools
+        run: pip install pillow
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Fixelect-Windows-Installer
+          path: installer
+
+      - name: Download a small model and skip onboarding
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA "Fixelect"
+          New-Item -ItemType Directory -Force (Join-Path $dir "models") | Out-Null
+          $model = Join-Path $dir "models\qwen2.5-1.5b-instruct-q4_k_m.gguf"
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" -OutFile $model
+          $hash = (Get-FileHash $model -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e") { throw "model checksum mismatch: $hash" }
+          '{"model_profile": "1.5b", "onboarding_done": true, "sound_enabled": false, "check_updates": false}' |
+            Set-Content -Encoding utf8 (Join-Path $dir "config.json")
+
+      - name: Install Fixelect like a user
+        shell: pwsh
+        run: |
+          $p = Start-Process installer\FixelectSetup.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru
+          $p.WaitForExit()
+          "installer exit code: $($p.ExitCode)"
+          Start-Sleep 15
+          $exe = Join-Path $env:LOCALAPPDATA "Programs\Fixelect\Fixelect.exe"
+          if (-not (Get-Process Fixelect -ErrorAction SilentlyContinue)) { Start-Process $exe -ArgumentList "--silent"; Start-Sleep 15 }
+          Get-Process Fixelect | Format-Table Id, Path -AutoSize
+
+      - name: Fix, Polish, Translate and a custom action in Notepad
+        run: python tests/win_e2e.py e2e-shots
+
+      - name: Fixelect log
+        if: always()
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:LOCALAPPDATA "Fixelect\logs\fixelect.log"
+          if (Test-Path $log) { Get-Content $log -Tail 40 }
+
+      - name: Publish screenshots
+        if: always() && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          [ -d e2e-shots ] || exit 0
+          cd e2e-shots
+          git init -q && git checkout -q -b shots
+          git add . && git -c user.name=fixelect-ci -c user.email=ci@users.noreply.github.com \
+            commit -qm "Windows E2E screenshots ${{ github.sha }}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" shots:ci-shots-windows
+
   publish-release:
     name: Publish GitHub Release
-    needs: [build-windows, build-macos, e2e-macos]
+    needs: [build-windows, build-macos, e2e-macos, e2e-windows]
     if: github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag_name != '')
     runs-on: ubuntu-latest
     steps:

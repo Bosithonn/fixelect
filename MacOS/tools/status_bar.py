@@ -9,7 +9,7 @@ signals (SIGTERM from the Dashboard's Quit, SIGUSR1 from a second launch).
 
 import time
 
-from config_mac import get_resource_path, load_config, get_hotkey_label
+from config_mac import get_resource_path, load_config, get_hotkey_label, get_menu_label
 from downloader_mac import MODELS
 
 _STATE = {"loading": "Loading model…", "ready": "Ready", "busy": "Working…", "error": "Engine offline",
@@ -62,10 +62,11 @@ class MacStatusBar:
                 self.i_status = rumps.MenuItem(bar._status_title())
                 self.i_fix = rumps.MenuItem("")
                 self.i_pol = rumps.MenuItem("")
+                self.i_menu = rumps.MenuItem("")
                 self.i_update = rumps.MenuItem("Check for updates…", callback=self._update)
                 self.menu = [
                     self.i_status, None,
-                    self.i_fix, self.i_pol, None,
+                    self.i_fix, self.i_pol, self.i_menu, None,
                     rumps.MenuItem("Open Fixelect…", callback=lambda _: bar.on_open_dashboard and bar.on_open_dashboard(),
                                    key=","),
                     rumps.MenuItem("Help & diagnostics…",
@@ -90,6 +91,7 @@ class MacStatusBar:
                 self.i_status.title = bar._status_title()
                 self.i_fix.title = f"Fix selected text      {get_hotkey_label('fix', cfg)}"
                 self.i_pol.title = f"Polish selected text   {get_hotkey_label('polish', cfg)}"
+                self.i_menu.title = f"Quick actions          {get_menu_label(cfg)}"
 
             def _tick(self, _timer):
                 self.refresh()

@@ -19,7 +19,7 @@ else:
     import downloader as D
     import hardware as H
 
-_PRIVATE_KEYS = {"custom_instruction", "custom_fix", "custom_polish"}
+_PRIVATE_KEYS = {"custom_instruction", "custom_fix", "custom_polish", "custom_actions"}
 
 
 def _hardware():

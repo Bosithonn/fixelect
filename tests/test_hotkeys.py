@@ -209,7 +209,7 @@ def t_event_time_still_rejects_slow_taps():
 def t_capture_keys():
     lst, fired = make("classic")
     seen = []
-    lst.capture_keys(lambda code, flags: seen.append(code) or code == 36)
+    lst.capture_keys(lambda code, flags, repeat=False: seen.append(code) or code == 36)
     swallowed = lst._on_key(36, 0, False)            # Return: taken by the preview
     passed = lst._on_key(0, 0, False)                # "a": still reaches the app
     combo = lst._on_key(3, CMD | OPT, False)         # shortcuts keep working
@@ -217,6 +217,19 @@ def t_capture_keys():
     after = lst._on_key(36, 0, False)
     ok = swallowed and not passed and combo and not after and seen == [36, 0, 3] and fired == ["fix"]
     return ok, (swallowed, passed, combo, after, seen, fired)
+
+
+def t_menu_shortcut_in_every_mode():
+    got = []
+    for mode in ("double_tap", "option_space", "classic", "custom"):
+        fired = []
+        lst = H.MacHotkeyListener(on_fix=lambda: fired.append("fix"), on_polish=lambda: fired.append("polish"),
+                                  config={"trigger_mode": mode}, on_menu=lambda: fired.append("menu"))
+        lst._fire = lambda cb: cb()
+        lst._configure()
+        swallowed = lst._on_key(49, CTRL | OPT, False)   # ⌃⌥Space
+        got.append((mode, fired, swallowed))
+    return all(f == ["menu"] and s for _m, f, s in got), got
 
 
 def main():

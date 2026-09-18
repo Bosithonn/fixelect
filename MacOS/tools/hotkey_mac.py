@@ -218,9 +218,11 @@ class MacHotkeyListener:
     WATCHDOG_SECONDS = 3.0
 
     def __init__(self, on_fix: Callable, on_polish: Callable,
-                 on_quit: Optional[Callable] = None, config: Optional[dict] = None):
+                 on_quit: Optional[Callable] = None, config: Optional[dict] = None,
+                 on_menu: Optional[Callable] = None):
         self.on_fix = on_fix
         self.on_polish = on_polish
+        self.on_menu = on_menu    # the quick-action menu (⌃⌥Space), in every trigger mode
         self.on_quit = on_quit  # kept for API compatibility; no global quit key
         self.config = config or load_config()
         self._lock = threading.RLock()
@@ -279,10 +281,12 @@ class MacHotkeyListener:
         self._escape = callback
 
     def capture_keys(self, handler: Optional[Callable]):
-        """Offer every key press to handler(code, flags) first; True swallows it (None stops).
+        """Offer every key press to handler(code, flags, repeat) first; True swallows it
+        (None stops).
 
-        The Polish preview uses this: macOS 14+ won't let a background app take the
-        keyboard, so Return would otherwise land in the user's document."""
+        The Polish preview and the quick-action menu use this: macOS 14+ won't let a
+        background app take the keyboard, so their keys would otherwise land in the
+        user's document."""
         self._capture = handler
 
     # -- tap lifecycle ----------------------------------------------------------
@@ -302,6 +306,10 @@ class MacHotkeyListener:
             parsed = parse_combo(text)
             if parsed:
                 self._combos[parsed] = cb
+        if self.on_menu is not None:
+            parsed = parse_combo(self.config.get("menu_hotkey") or "<ctrl>+<alt>+<space>")
+            if parsed and parsed not in self._combos:
+                self._combos[parsed] = self.on_menu
         self._double_tap = mode == "double_tap"
         self._opt.reset()
         self._shift.reset()
@@ -366,9 +374,9 @@ class MacHotkeyListener:
 
     def _on_key(self, code, flags, repeat, ts=None) -> bool:
         capture = self._capture
-        if capture is not None and not repeat:
+        if capture is not None:
             try:
-                if capture(code, flags):
+                if capture(code, flags, repeat):
                     return True
             except Exception:
                 pass

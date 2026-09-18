@@ -24,7 +24,12 @@ TYPOS = "i cant beleive teh wether is so nice today, lets go outside and enjoy i
 ROUGH = "hey can u send me the report by friday i need it for the meeting"
 OUT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "e2e-shots")
 OPT, SHIFT, CMD = Quartz.kCGEventFlagMaskAlternate, Quartz.kCGEventFlagMaskShift, Quartz.kCGEventFlagMaskCommand
+CTRL = Quartz.kCGEventFlagMaskControl
 KEY_OPT, KEY_SHIFT, KEY_A, KEY_RETURN = 58, 56, 0, 36
+KEY_SPACE, KEY_4, KEY_5, KEY_7 = 49, 21, 23, 26
+TO_TRANSLATE = "Good morning, I will send you the report tomorrow before the meeting."
+TO_LIST = ("We need to buy milk, eggs and bread, then call the plumber about the kitchen sink "
+           "and pay the electricity bill before Friday.")
 failures = []
 
 
@@ -178,10 +183,66 @@ def test_polish():
         annotate("notice", "E2E polish", f"{ROUGH} -> {after} ({took:.1f} s)")
 
 
+def pick_from_menu(name, *keys):
+    """⌃⌥Space, wait for the quick-action menu, then press the given keys."""
+    existing = {w.get("kCGWindowNumber") for w in fixelect_windows()}
+    press(KEY_SPACE, CTRL | OPT)
+    t0 = time.time()
+    while time.time() - t0 < 30:
+        if any(w.get("kCGWindowNumber") not in existing for w in fixelect_windows()):
+            break
+        time.sleep(0.3)
+    else:
+        raise RuntimeError("the quick-action menu did not appear")
+    time.sleep(0.8)
+    shot(f"{name}-menu")
+    for k in keys:
+        press(k)
+        time.sleep(1.0)
+        shot(f"{name}-menu-after-key")
+
+
+def test_translate():
+    app = open_document("fixelect-translate", TO_TRANSLATE)
+    press(KEY_A, CMD)
+    log("Quick actions: Translate… → Russian")
+    pick_from_menu("translate", KEY_4, KEY_7)
+    after, took = wait_for_change(app, TO_TRANSLATE, 240, "translate")
+    shot("translate-2-result")
+    log(f"  before: {TO_TRANSLATE}\n  after:  {after}")
+    cyrillic = sum(1 for c in (after or "").lower() if "а" <= c <= "я" or c == "ё")
+    if took is None:
+        failures.append("Translate: the text was not replaced within 240 s.")
+    elif cyrillic < 15:
+        failures.append(f"Translate: result is not Russian: {after!r}")
+    else:
+        log(f"  PASS: translated in {took:.1f} s")
+        annotate("notice", "E2E translate", f"{TO_TRANSLATE} -> {after} ({took:.1f} s)")
+
+
+def test_action():
+    app = open_document("fixelect-action", TO_LIST)
+    press(KEY_A, CMD)
+    log("Quick actions: Bullet points (key 5)")
+    pick_from_menu("action", KEY_5)
+    after, took = wait_for_change(app, TO_LIST, 240, "action")
+    shot("action-2-result")
+    log(f"  before: {TO_LIST}\n  after:  {after}")
+    bullets = [ln for ln in (after or "").splitlines() if ln.strip().startswith(("-", "•", "*"))]
+    if took is None:
+        failures.append("Bullet points: the text was not replaced within 240 s.")
+    elif len(bullets) < 2:
+        failures.append(f"Bullet points: no list came back: {after!r}")
+    else:
+        log(f"  PASS: {len(bullets)} bullets in {took:.1f} s")
+        annotate("notice", "E2E bullet points", f"{len(bullets)} bullets ({took:.1f} s): " + " | ".join(bullets))
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     shot("0-desktop")
-    for name, test in (("fix", test_fix), ("polish", test_polish)):
+    for name, test in (("fix", test_fix), ("polish", test_polish), ("translate", test_translate),
+                       ("action", test_action)):
         try:
             test()
         except Exception as e:

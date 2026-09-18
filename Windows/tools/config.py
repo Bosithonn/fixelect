@@ -24,6 +24,7 @@ DEFAULT_CONFIG = {
     "hotkey_polish": "double_control",
     "custom_fix": "Ctrl+Alt+F",
     "custom_polish": "Ctrl+Alt+P",
+    "menu_hotkey": "Ctrl+Alt+Space",    # quick-action menu (Fix, Polish, Translate, your actions)
     "prefetch_enabled": False,          # speculative fixes of selected text (uses more power)
     "polish_style": "professional",     # see check_guard.POLISH_STYLES
     "custom_instruction": "",           # the writer's own style note for Polish
@@ -94,6 +95,18 @@ def get_hotkey_label(mode: str = "fix", config: dict = None) -> str:
     if len(caps) == 2 and caps[0] == caps[1]:
         return f"{caps[0]} {caps[1]}"
     return " + ".join(caps)
+
+
+def get_menu_keycaps(config: dict = None) -> list:
+    """Key caps of the quick-action menu shortcut, e.g. ['Ctrl', 'Alt', 'Space']."""
+    raw = (config if config is not None else load_config()).get("menu_hotkey") or "Ctrl+Alt+Space"
+    names = {"ctrl": "Ctrl", "control": "Ctrl", "alt": "Alt", "shift": "Shift", "win": "Win", "space": "Space"}
+    tokens = [t.strip().lower().strip("<>") for t in raw.replace("+", " ").split() if t.strip()]
+    return [names.get(t, t.upper()) for t in tokens]
+
+
+def get_menu_label(config: dict = None) -> str:
+    return " + ".join(get_menu_keycaps(config))
 
 
 def parse_hotkey_string(combo: str) -> tuple:

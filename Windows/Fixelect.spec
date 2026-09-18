@@ -49,6 +49,7 @@ hidden_imports = [
     'updater',
     'diagnostics',
     'version',
+    'actions',
     'net',
     'truststore',
     'certifi',

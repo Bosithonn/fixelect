@@ -277,7 +277,7 @@ class MacApp:
                     self._wake_engine(show_card=False)
                 elif kind == "undo":
                     self._do_undo(payload)
-                elif kind in ("fix", "polish"):
+                elif kind in ("fix", "polish", "menu"):
                     if queued_at < self._last_hotkey_done:
                         continue
                     try:
@@ -286,7 +286,7 @@ class MacApp:
                         self._last_hotkey_done = time.time()
             except Exception as e:
                 log_error(f"job {kind} failed: {type(e).__name__}: {e}")
-                if kind in ("fix", "polish"):
+                if kind in ("fix", "polish", "menu"):
                     self.set_status("ready" if self.fix else "error", "")
                     self.hud("error", "Fixelect couldn't finish", str(e) or type(e).__name__,
                              actions=[("Help", lambda: self.open_window("dashboard", "Help"))], timeout=7000)
@@ -344,6 +344,57 @@ class MacApp:
         finally:
             self.set_status("ready", "Ready")
 
+    def _run_action(self, text, item, progress=None, cancel=None):
+        """A quick action (translate / custom) through the embedded engine."""
+        import actions
+        if ENGINE != "embedded":
+            raise actions.ActionError("Quick actions need Fixelect's built-in AI engine.")
+        if self.fix is None and not self._load_engine():
+            raise RuntimeError(self.status_info.get("detail") or "The AI engine is not available.")
+        self.set_status("busy", "Working…")
+        try:
+            return actions.run(self._engine(), text, item, progress=progress, cancel=cancel)
+        finally:
+            self.set_status("ready", "Ready")
+
+    def _choose_action(self, cfg):
+        """Show the quick-action menu and wait for the user's choice (None = closed)."""
+        import actions
+        from hud_mac import ask_action, menu_key
+        if self.listener is not None:
+            self.listener.capture_keys(menu_key)
+        try:
+            return ask_action(actions.menu_items(cfg), lambda item: actions.submenu(item, cfg))
+        finally:
+            if self.listener is not None:
+                self.listener.capture_keys(None)
+
+    def _do_action(self, text, item, cfg, original, front):
+        import actions
+        result, _info = self._compute(text, "action", cfg, action=item)
+        if result is None:
+            self._schedule_restore(original, 0.05)
+            self.hud("info", "Cancelled", "Your text was not changed.", timeout=2000)
+            return
+        if result.strip() == text.strip():
+            self._schedule_restore(original, 0.05)
+            self.hud("success", "Nothing to change", "The result is the same as your text.", timeout=2500)
+            return
+        undo = self._paste(result, {}, original, front, "polish")
+        self.hud("polish", actions.done_title(item), "", actions=undo, timeout=5000)
+
+    def _paste(self, fixed, kept, original, front, sound):
+        """Replace the still-selected text with `fixed`. Returns the card's Undo action."""
+        clip.set_text(fixed, transient=True, html=kept.get("html"), rtf=kept.get("rtf"))
+        count = clip.change_count()
+        time.sleep(0.03)
+        clip.wait_for_modifiers()
+        clip.paste()
+        play_sound(sound)
+        self._schedule_restore(original, RESTORE_DELAY, only_if_count=count)
+        self._undo = {"app": front, "time": time.time()}
+        return [("Undo", lambda ctx=self._undo: self.jobs.put(("undo", ctx, time.time())))]
+
     def _enable_app(self, bundle_id):
         cfg = load_config()
         update_config(disabled_apps=[a for a in cfg.get("disabled_apps", []) if a != bundle_id])
@@ -365,7 +416,7 @@ class MacApp:
         if not clip.copy_selection():
             self._schedule_restore(original, 0.05)
             self.hud("info", "Select some text first",
-                     "Highlight the words you want to " + ("fix" if mode == "fix" else "polish")
+                     "Highlight the words you want to " + {"fix": "fix", "polish": "polish"}.get(mode, "change")
                      + ", then use the shortcut again.", timeout=3500)
             return
         text = clip.get_text()
@@ -379,6 +430,18 @@ class MacApp:
             self.hud("info", "That selection is very long",
                      f"Select up to {MAX_SELECTION_CHARS:,} characters at a time.", timeout=4500)
             return
+
+        choice = None
+        if mode == "menu":
+            choice = self._choose_action(cfg)
+            if choice is None:
+                self._schedule_restore(original, 0.05)
+                return
+            if choice["kind"] in ("translate", "custom"):
+                self._do_action(text, choice, cfg, original, front)
+                return
+            mode = choice["kind"]  # fix, or polish in the chosen style
+
         lang = detect_language(text)
         supported = languages.supported_for(cfg.get("model_profile"))
         if lang != "en" and (lang not in supported or not cfg.get("multilingual", True)):
@@ -396,14 +459,14 @@ class MacApp:
                          f"Fixelect works in {supported_languages_line()}.", timeout=5500)
             return
 
-        if mode == "polish" and cfg.get("polish_preview", True):
+        if mode == "polish" and choice is None and cfg.get("polish_preview", True):
             fixed = self._polish_with_preview(text, cfg, front)
             info = {}
             if fixed is None:
                 self._schedule_restore(original, 0.05)
                 return
         else:
-            fixed, info = self._compute(text, mode, cfg)
+            fixed, info = self._compute(text, mode, cfg, style=(choice or {}).get("style"))
             if fixed is None:
                 self._schedule_restore(original, 0.05)
                 self.hud("info", "Cancelled", "Your text was not changed.", timeout=2000)
@@ -418,16 +481,7 @@ class MacApp:
             return
 
         kept = clip.rewrite_rich(rich, text, fixed) if rich else {}
-        clip.set_text(fixed, transient=True, html=kept.get("html"), rtf=kept.get("rtf"))
-        count = clip.change_count()
-        time.sleep(0.03)
-        clip.wait_for_modifiers()
-        clip.paste()
-        play_sound(mode)
-        self._schedule_restore(original, RESTORE_DELAY, only_if_count=count)
-
-        self._undo = {"app": front, "time": time.time()}
-        undo = [("Undo", lambda ctx=self._undo: self.jobs.put(("undo", ctx, time.time())))]
+        undo = self._paste(fixed, kept, original, front, mode)
         detail = "Formatting kept." if kept else ""
         if mode == "polish" and not info.get("polish_fallback"):
             self.hud("polish", "Polished", detail, actions=undo, timeout=5000)
@@ -437,13 +491,14 @@ class MacApp:
                 detail = "Polishing would have changed your meaning, so only typos were fixed."
             self.hud("success", f"Fixed {plural(n, 'word')}" if n else "Fixed", detail, actions=undo, timeout=5000)
 
-    def _compute(self, text, mode, cfg, style=None, variant=0):
+    def _compute(self, text, mode, cfg, style=None, variant=0, action=None):
+        import actions
         info = {}
         opts = self._options(cfg, mode, style, variant, info)
         self.cancel_event.clear()
         done = threading.Event()
-        long_job = chunking.needs_chunking(text, mode)
-        verb = "Fixing" if mode == "fix" else "Polishing"
+        long_job = actions.is_long(action, text) if action else chunking.needs_chunking(text, mode)
+        verb = actions.verb(action) if action else ("Fixing" if mode == "fix" else "Polishing")
         state = {"progress": None}
 
         def show_working():
@@ -466,6 +521,8 @@ class MacApp:
         esc = self._esc_listener() if long_job else None
         try:
             self._wake_engine()
+            if action:
+                return self._run_action(text, action, progress=progress, cancel=self.cancel_event), info
             return self._run(text, mode, opts, progress=progress, cancel=self.cancel_event), info
         except chunking.Cancelled:
             return None, info
@@ -580,7 +637,7 @@ class MacApp:
                 continue
             last_mtime = mtime
             new = load_config()
-            if any(new.get(k) != cfg.get(k) for k in ("trigger_mode", "custom_fix", "custom_polish")):
+            if any(new.get(k) != cfg.get(k) for k in ("trigger_mode", "custom_fix", "custom_polish", "menu_hotkey")):
                 if self.listener:
                     self.listener.reload(new)
             if new.get("model_profile") != cfg.get("model_profile") and resolve_model(new.get("model_profile")):
@@ -681,7 +738,8 @@ class MacApp:
 
         threading.Thread(target=self.worker, daemon=True).start()
         self.listener = MacHotkeyListener(on_fix=lambda: self.trigger("fix"),
-                                          on_polish=lambda: self.trigger("polish"), config=load_config())
+                                          on_polish=lambda: self.trigger("polish"), config=load_config(),
+                                          on_menu=lambda: self.trigger("menu"))
         self.listener.start()
         threading.Thread(target=self.config_watcher, daemon=True).start()
         threading.Thread(target=self.idle_watcher, daemon=True).start()

@@ -470,6 +470,9 @@ HELP_ITEMS = [
     ("A language isn't supported",
      "Fixelect fixes English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. "
      "Uzbek (beta) works with the Gemma 4 model. Other languages are left unchanged on purpose."),
+    ("How do I translate, or use my own actions?",
+     "Select text and press the quick-action shortcut (Ctrl+Alt+Space on Windows, ⌃⌥Space on a Mac), then "
+     "press a number: Translate… lists the languages. Add your own actions, like “Reply politely”, under Actions."),
     ("The shortcut doesn't work",
      "Another app may use the same keys. Pick a different preset in Shortcuts; the status line there shows conflicts."),
     ("The first fix after a break is slow",
@@ -478,7 +481,7 @@ HELP_ITEMS = [
 
 
 class Dashboard(_Window):
-    TABS = ("Playground", "Shortcuts", "Writing", "Model", "General", "Help")
+    TABS = ("Playground", "Shortcuts", "Writing", "Actions", "Model", "General", "Help")
 
     def __init__(self, master, services, post, on_close=None, page=None):
         super().__init__(master, "Fixelect", 660, 700, on_close)
@@ -505,7 +508,7 @@ class Dashboard(_Window):
         self.tabs_row.pack(fill="x")
         for name in self.TABS:
             b = Button(self.tabs_row, name, lambda n=name: self.show(n), variant="tab", height=32,
-                       font=K.FONTS["body_b"], padx=12)
+                       font=K.FONTS["body_b"], padx=11)
             b.pack(side="left", padx=(0, px(2)))
             self.tab_buttons[name] = b
         self.rule = tk.Frame(outer, bg=BORDER, height=1)
@@ -907,6 +910,140 @@ class Dashboard(_Window):
         C.update_config(**{key: bool(var.get())})
         self.services.prefs_changed()
 
+    # -- Actions (quick-action menu) ----------------------------------------------------
+
+    def _build_actions(self, page):
+        cfg = C.load_config()
+        head = tk.Frame(page, bg=BG)
+        head.pack(fill="x")
+        label(head, "Quick actions", "title").pack(side="left")
+        keycaps(head, C.get_menu_keycaps(cfg)).pack(side="right")
+        label(page, "Select text in any app and press this shortcut: a menu offers Fix, Polish in any style, "
+                    "Translate and the actions below. Press a number to choose.",
+              "small", TEXT_2, wrap=580).pack(fill="x", pady=(px(4), px(12)))
+
+        foot = tk.Frame(page, bg=BG)
+        foot.pack(side="bottom", fill="x", pady=(px(10), 0))
+        Button(foot, "Restore examples", self._restore_actions, "ghost", height=32).pack(side="left")
+        self.act_status = label(foot, "", "small", TEXT_2)
+        self.act_status.pack(side="right")
+
+        editor = Card(page, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=12)
+        editor.pack(side="bottom", fill="x", pady=(px(10), 0))
+        self.act_title = label(editor.body, "Add an action", "body_b")
+        self.act_title.pack(fill="x")
+        self.act_name = self._action_entry(editor.body, "Name, e.g. Reply politely")
+        self.act_prompt = self._action_entry(
+            editor.body, "What it should do, e.g. Write a short, friendly reply to this message.")
+        row = tk.Frame(editor.body, bg=SURFACE)
+        row.pack(fill="x", pady=(px(10), 0))
+        self.act_save = Button(row, "Add action", self._save_action, "primary", height=32)
+        self.act_save.pack(side="right")
+        self.act_cancel = Button(row, "Cancel", self._cancel_action_edit, "ghost", height=32)
+        self._act_edit = None
+
+        label(page, "Your actions", "small_b", TEXT_2).pack(fill="x", pady=(0, px(6)))
+        self.act_list = self._scroll_page(page, 230)
+        self._render_actions()
+
+    def _action_entry(self, parent, hint):
+        label(parent, hint, "small", TEXT_2).pack(fill="x", pady=(px(8), px(4)))
+        field = Card(parent, fill=FIELD, border=BORDER, radius=8, padx=10, pady=6)
+        field.pack(fill="x")
+        entry = tk.Entry(field.body, bg=FIELD, fg=TEXT, insertbackground=TEXT, relief="flat",
+                         bd=0, highlightthickness=0, font=K.FONTS["body"])
+        entry.pack(fill="x")
+        K.layout_independent_shortcuts(entry)
+        entry.bind("<FocusIn>", lambda e: field.set_style(border=ACCENT))
+        entry.bind("<FocusOut>", lambda e: field.set_style(border=BORDER))
+        entry.bind("<Return>", lambda e: self._save_action())
+        return entry
+
+    def _render_actions(self):
+        import actions as ACT
+        for w in self.act_list.winfo_children():
+            w.destroy()
+        acts = ACT.custom_actions(C.load_config())
+        if not acts:
+            label(self.act_list, "No actions yet. Add one below.", "small", TEXT_3).pack(fill="x", pady=px(6))
+        first = len(ACT.menu_items({"custom_actions": []}))   # Fix, Polish, styles, Translate come first
+        for i, a in enumerate(acts):
+            card = Card(self.act_list, fill=SURFACE, border=BORDER, radius=10, padx=14, pady=10)
+            card.pack(fill="x", pady=(0, px(6)))
+            top = tk.Frame(card.body, bg=SURFACE)
+            top.pack(fill="x")
+            if first + i < 9:
+                Pill(top, str(first + i + 1), fg=ACCENT, fill=K.ACCENT_SOFT, height=22).pack(
+                    side="left", padx=(0, px(10)))
+            label(top, a["name"], "body_b").pack(side="left")
+            Button(top, "Delete", lambda i=i: self._delete_action(i), "ghost", height=26,
+                   font=K.FONTS["small_b"], padx=10).pack(side="right")
+            Button(top, "Edit", lambda i=i: self._edit_action(i), "ghost", height=26,
+                   font=K.FONTS["small_b"], padx=10).pack(side="right")
+            label(card.body, a["prompt"], "small", TEXT_2, wrap=520).pack(fill="x", pady=(px(4), 0))
+        full = len(acts) >= ACT.MAX_CUSTOM_ACTIONS and self._act_edit is None
+        self.act_save.set_state("disabled" if full else "normal")
+
+    def _save_action(self):
+        import actions as ACT
+        name = " ".join(self.act_name.get().split())[:ACT.MAX_NAME]
+        prompt = " ".join(self.act_prompt.get().split())[:ACT.MAX_PROMPT]
+        if not name or not prompt:
+            self.act_status.configure(text="Give the action a name and say what it should do.", fg=RED)
+            return
+        acts = ACT.custom_actions(C.load_config())
+        if self._act_edit is not None and self._act_edit < len(acts):
+            acts[self._act_edit] = {"name": name, "prompt": prompt}
+        elif len(acts) >= ACT.MAX_CUSTOM_ACTIONS:
+            self.act_status.configure(text=f"Up to {ACT.MAX_CUSTOM_ACTIONS} actions.", fg=RED)
+            return
+        else:
+            acts.append({"name": name, "prompt": prompt})
+        C.update_config(custom_actions=acts)
+        self._cancel_action_edit()
+        self._render_actions()
+        self.act_status.configure(text="Saved.", fg=GREEN)
+        self.after(1500, lambda: self.act_status.configure(text=""))
+
+    def _edit_action(self, i):
+        import actions as ACT
+        acts = ACT.custom_actions(C.load_config())
+        if not 0 <= i < len(acts):
+            return
+        for entry, value in ((self.act_name, acts[i]["name"]), (self.act_prompt, acts[i]["prompt"])):
+            entry.delete(0, "end")
+            entry.insert(0, value)
+        self._act_edit = i
+        self.act_title.configure(text=f"Edit “{acts[i]['name']}”")
+        self.act_save.set_text("Save")
+        self.act_save.set_state("normal")
+        self.act_cancel.pack(side="right", padx=(0, px(8)))
+        self.act_name.focus_set()
+
+    def _cancel_action_edit(self):
+        self._act_edit = None
+        for entry in (self.act_name, self.act_prompt):
+            entry.delete(0, "end")
+        self.act_title.configure(text="Add an action")
+        self.act_save.set_text("Add action")
+        self.act_cancel.pack_forget()
+
+    def _delete_action(self, i):
+        import actions as ACT
+        acts = ACT.custom_actions(C.load_config())
+        if 0 <= i < len(acts):
+            del acts[i]
+            C.update_config(custom_actions=acts)
+            if self._act_edit is not None:
+                self._cancel_action_edit()
+            self._render_actions()
+
+    def _restore_actions(self):
+        import actions as ACT
+        C.update_config(custom_actions=[dict(a) for a in ACT.DEFAULT_ACTIONS])
+        self._cancel_action_edit()
+        self._render_actions()
+
     # -- Model ------------------------------------------------------------------------
 
     def _build_model(self, page):
@@ -1162,7 +1299,8 @@ class Dashboard(_Window):
         steps.pack(fill="x", pady=(px(10), px(16)))
         for n, s in enumerate((
             "Select text in any app.",
-            f"Press {C.get_hotkey_label('fix')} to fix it, or {C.get_hotkey_label('polish')} to polish it.",
+            f"Press {C.get_hotkey_label('fix')} to fix it, or {C.get_hotkey_label('polish')} to polish it. "
+            f"{C.get_menu_label()} opens a menu with Translate, other styles and your own actions.",
             "The text is replaced where it is. Undo from the card that appears, or with "
             + ("⌘Z." if IS_MAC else "Ctrl+Z."),
         ), 1):
@@ -1425,6 +1563,21 @@ class UIManager:
                 self._hud.hide()
             self.preview = PolishPreview(self.root, styles, style, on_decision)
             self.preview.present(anchor)
+        self.post(make)
+
+    def open_menu(self, items, submenu, on_choice, anchor=None):
+        """The quick-action menu. `on_choice(item | None)` is called exactly once."""
+        self._ensure()
+
+        def make():
+            try:
+                from hud_win import ActionMenu
+                if self._hud is not None:
+                    self._hud.hide()
+                ActionMenu(self.root, items, submenu, on_choice).present(anchor)
+            except Exception as e:
+                print(f"  (menu failed: {e})")
+                on_choice(None)
         self.post(make)
 
     def preview_result(self, before, after, note=""):

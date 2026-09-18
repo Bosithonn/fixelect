@@ -224,7 +224,7 @@ _preview = {}
 _PREVIEW_KEYS = {36: 0, 76: 0, 53: 1, 15: 2}
 
 
-def preview_key(code, flags=0):
+def preview_key(code, flags=0, repeat=False):
     """Route a key press to the open Polish preview; True means it was handled.
 
     Called from Fixelect's keyboard tap. macOS 14+ keeps the user's app in front
@@ -232,6 +232,8 @@ def preview_key(code, flags=0):
     alert = _preview.get("alert")
     if alert is None or code not in _PREVIEW_KEYS or flags & 0x1C0000:   # not with ⌘ ⌥ ⌃
         return False
+    if repeat:
+        return True   # a held key: swallow it, act once
     index = _PREVIEW_KEYS[code]
     AppHelper.callAfter(lambda: alert.buttons()[index].performClick_(None))
     return True
@@ -269,3 +271,187 @@ def ask_polish(styles, style, before, after, note=""):
     AppHelper.callAfter(run)
     done.wait()
     return box["r"]
+
+
+# ---------------------------------------------------------------------------
+# Quick-action menu (⌃⌥Space)
+# ---------------------------------------------------------------------------
+#
+# A non-activating panel like the status card: the user's app keeps focus and
+# its selection. Fixelect's key tap hands every key to menu_key() while the menu
+# is open, so typing can never replace the selected text by accident.
+
+_menu = {}
+_MENU_W, _ROW_H, _HEAD_H, _FOOT_H, _PAD = 300, 28, 28, 24, 8
+_DIGITS = {18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5, 26: 6, 28: 7, 25: 8,      # 1-9
+           83: 0, 84: 1, 85: 2, 86: 3, 87: 4, 88: 5, 89: 6, 91: 7, 92: 8}      # keypad 1-9
+_UP, _DOWN, _LEFT, _RIGHT, _RETURN, _ENTER, _ESC, _DELETE = 126, 125, 123, 124, 36, 76, 53, 51
+
+
+def menu_key(code, flags=0, repeat=False):
+    """Keys while the quick-action menu is open (from Fixelect's key tap). Every key
+    is taken so it can't reach the document; ⌘ / ⌃ / ⌥ chords pass through."""
+    if _menu.get("state") is None or flags & 0x1C0000:
+        return False
+    if not repeat or code in (_UP, _DOWN):
+        AppHelper.callAfter(_menu_key, code)
+    return True
+
+
+def ask_action(items, submenu):
+    """Blocking (call from the worker): show the menu, return the chosen item or None."""
+    if not _OK:
+        return None
+    done = threading.Event()
+    box = {}
+
+    def finish(item):          # main thread
+        if done.is_set():
+            return
+        box["r"] = item
+        _close_menu()
+        done.set()
+
+    AppHelper.callAfter(_open_menu, items, submenu, finish)
+    if not done.wait(300):
+        AppHelper.callAfter(finish, None)   # nobody answered: close it quietly
+        done.wait(2)
+    return box.get("r")
+
+
+def _open_menu(items, submenu, finish):
+    try:
+        mouse = NSEvent.mouseLocation()
+        _menu["anchor"] = (mouse.x, mouse.y)
+        _menu["state"] = {"stack": [("Fixelect", list(items))], "index": 0, "submenu": submenu,
+                          "finish": finish}
+        _render_menu()
+    except Exception as e:
+        print(f"  (menu failed: {e})")
+        finish(None)
+
+
+def _close_menu():
+    _menu.pop("state", None)
+    panel = _menu.get("panel")
+    if panel is not None:
+        panel.orderOut_(None)
+
+
+def _menu_key(code):
+    st = _menu.get("state")
+    if st is None:
+        return
+    items = st["stack"][-1][1]
+    if code in (_UP, _DOWN):
+        st["index"] = (st["index"] + (1 if code == _DOWN else -1)) % len(items)
+        _render_menu()
+    elif code in (_RETURN, _ENTER, _RIGHT):
+        _menu_choose(st["index"])
+    elif code in _DIGITS:
+        _menu_choose(_DIGITS[code])
+    elif code in (_LEFT, _DELETE):
+        if len(st["stack"]) > 1:
+            st["stack"].pop()
+            st["index"] = 0
+            _render_menu()
+        else:
+            st["finish"](None)
+    elif code == _ESC:
+        st["finish"](None)
+
+
+def _menu_choose(i):
+    st = _menu.get("state")
+    if st is None:
+        return
+    items = st["stack"][-1][1]
+    if not 0 <= i < len(items):
+        return
+    sub = st["submenu"](items[i])
+    if sub:
+        st["stack"].append((items[i]["label"].rstrip("…"), sub))
+        st["index"] = 0
+        _render_menu()
+    else:
+        st["finish"](items[i])
+
+
+def _render_menu():
+    st = _menu.get("state")
+    if st is None:
+        return
+    title, items = st["stack"][-1]
+    panel = _menu.get("panel")
+    if panel is None:
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, _MENU_W, 100), _BORDERLESS | _NONACTIVATING, _BUFFERED, False)
+        panel.setLevel_(_STATUS_LEVEL)
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setFloatingPanel_(True)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        panel.setCollectionBehavior_(_ALL_SPACES | _FULLSCREEN_AUX)
+        _menu["panel"] = panel
+
+    h = _PAD + _HEAD_H + len(items) * _ROW_H + _FOOT_H + _PAD
+    view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, _MENU_W, h))
+    view.setWantsLayer_(True)
+    layer = view.layer()
+    layer.setBackgroundColor_(_rgb((0.07, 0.08, 0.11), 0.97).CGColor())
+    layer.setCornerRadius_(12)
+    layer.setBorderWidth_(1)
+    layer.setBorderColor_(_rgb((0.19, 0.22, 0.29)).CGColor())
+
+    head = _label(title, 12, bold=True, color=(0.64, 0.67, 0.72), width=_MENU_W - 32)
+    head.setFrameOrigin_((16, h - _PAD - 20))
+    view.addSubview_(head)
+    targets = []
+    for i, item in enumerate(items):
+        y = h - _PAD - _HEAD_H - (i + 1) * _ROW_H
+        if i == st["index"]:
+            hl = NSView.alloc().initWithFrame_(NSMakeRect(6, y, _MENU_W - 12, _ROW_H))
+            hl.setWantsLayer_(True)
+            hl.layer().setBackgroundColor_(_rgb((0.24, 0.48, 1.0), 0.32).CGColor())
+            hl.layer().setCornerRadius_(7)
+            view.addSubview_(hl)
+        num = _label(str(i + 1) if i < 9 else "", 12, color=(0.55, 0.58, 0.64))
+        num.setFrameOrigin_((16, y + 6))
+        view.addSubview_(num)
+        text = _label(item["label"], 13, width=_MENU_W - 80)
+        text.setFrameOrigin_((38, y + 5))
+        view.addSubview_(text)
+        if st["submenu"](item):
+            arrow = _label("›", 15, bold=True, color=(0.55, 0.58, 0.64))
+            arrow.setFrameOrigin_((_MENU_W - 28, y + 4))
+            view.addSubview_(arrow)
+        target = _Target.alloc().initWithCallback_(lambda i=i: _menu_choose(i))
+        targets.append(target)
+        btn = NSButton.alloc().initWithFrame_(NSMakeRect(6, y, _MENU_W - 12, _ROW_H))
+        btn.setTransparent_(True)
+        btn.setTitle_("")
+        btn.setTarget_(target)
+        btn.setAction_("fire:")
+        view.addSubview_(btn)
+    hint = "1–9 or ↑↓ Enter  ·  " + ("← back  ·  " if len(st["stack"]) > 1 else "") + "Esc close"
+    foot = _label(hint, 11, color=(0.48, 0.51, 0.57), width=_MENU_W - 32)
+    foot.setFrameOrigin_((16, _PAD + 3))
+    view.addSubview_(foot)
+    _menu["targets"] = targets
+    panel.setContentView_(view)
+
+    mx, my = _menu.get("anchor", (0, 0))
+    screen = NSScreen.mainScreen()
+    for s in NSScreen.screens() or []:
+        f = s.frame()
+        if f.origin.x <= mx < f.origin.x + f.size.width and f.origin.y <= my < f.origin.y + f.size.height:
+            screen = s
+    vis = screen.visibleFrame()
+    x = min(max(vis.origin.x + 8, mx - 20), vis.origin.x + vis.size.width - _MENU_W - 8)
+    y = my - h - 16
+    if y < vis.origin.y + 8:
+        y = min(my + 16, vis.origin.y + vis.size.height - h - 8)
+    panel.setFrame_display_(NSMakeRect(x, y, _MENU_W, h), True)
+    panel.orderFrontRegardless()

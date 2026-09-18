@@ -7,7 +7,7 @@
 
 #define MyAppName "Fixelect"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.1.4"
+  #define MyAppVersion "1.2.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "dist\Fixelect"

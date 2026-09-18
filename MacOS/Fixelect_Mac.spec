@@ -39,6 +39,7 @@ a = Analysis(
         'updater',
         'diagnostics',
         'version',
+        'actions',
         'net',
         'truststore',
         'certifi',

@@ -81,6 +81,7 @@ from config import (  # noqa: E402
     update_config,
     get_config_dir,
     get_hotkey_label,
+    get_menu_label,
     parse_hotkey_string,
     validate_hotkey,
     log_error,
@@ -124,8 +125,8 @@ WM_APP_RELOAD_HOTKEYS = 0x8000 + 10
 WM_APP_SUSPEND_HOTKEYS = 0x8000 + 11
 WM_APP_CANCEL_KEY = 0x8000 + 12
 ID_FIX, ID_POLISH, ID_QUIT = 1001, 1002, 1003
-ID_FALLBACK_FIX, ID_FALLBACK_POLISH, ID_CANCEL = 1004, 1005, 1006
-ALL_HOTKEY_IDS = (ID_FIX, ID_POLISH, ID_QUIT, ID_FALLBACK_FIX, ID_FALLBACK_POLISH)
+ID_FALLBACK_FIX, ID_FALLBACK_POLISH, ID_CANCEL, ID_MENU = 1004, 1005, 1006, 1007
+ALL_HOTKEY_IDS = (ID_FIX, ID_POLISH, ID_QUIT, ID_FALLBACK_FIX, ID_FALLBACK_POLISH, ID_MENU)
 
 IDC_WAIT = 32514
 IDC_APPSTARTING = 32650
@@ -575,7 +576,7 @@ class FixelectApp:
                     self._do_undo(payload)
                 elif kind == "unload":
                     self._unload_if_idle()
-                elif kind in ("fix", "polish"):
+                elif kind in ("fix", "polish", "menu"):
                     if queued_at < self._last_hotkey_done:
                         continue  # pressed again while the previous one was running
                     try:
@@ -585,7 +586,7 @@ class FixelectApp:
                         self._last_hotkey_done = time.time()
             except Exception as e:
                 log_error(f"job {kind} failed: {type(e).__name__}: {e}")
-                if kind in ("fix", "polish"):
+                if kind in ("fix", "polish", "menu"):
                     self.set_status("ready" if self.fix else "error", "")
                     self.hud("error", "Fixelect couldn't finish", str(e) or type(e).__name__,
                              actions=[("Help", lambda: self.open_dashboard("Help"))], timeout=7000)
@@ -607,6 +608,19 @@ class FixelectApp:
         try:
             return chunking.process(text, lambda t: fix(t, mode=mode, **opts), mode=mode,
                                     progress=progress, cancel=cancel)
+        finally:
+            self.set_status("ready", "Ready")
+
+    def _run_action(self, text, item, progress=None, cancel=None):
+        """A quick action (translate / custom) through the embedded engine."""
+        import actions
+        if ENGINE != "embedded":
+            raise actions.ActionError("Quick actions need Fixelect's built-in AI engine.")
+        self._ensure_fix()
+        self._wake_engine(show_card=False)
+        self.set_status("busy", "Working…")
+        try:
+            return actions.run(self._engine(), text, item, progress=progress, cancel=cancel)
         finally:
             self.set_status("ready", "Ready")
 
@@ -673,7 +687,7 @@ class FixelectApp:
         if not copy_selection():
             self._schedule_restore(original, 0.05)
             self.hud("info", "Select some text first",
-                     "Highlight the words you want to " + ("fix" if mode == "fix" else "polish")
+                     "Highlight the words you want to " + {"fix": "fix", "polish": "polish"}.get(mode, "change")
                      + ", then use the shortcut again.", timeout=3500, anchor=anchor)
             return
 
@@ -689,6 +703,18 @@ class FixelectApp:
             self.hud("info", "That selection is very long",
                      f"Select up to {MAX_SELECTION_CHARS:,} characters at a time.", timeout=4500, anchor=anchor)
             return
+
+        choice = None
+        if mode == "menu":
+            choice = self._choose_action(cfg, anchor)
+            if choice is None:
+                self._schedule_restore(original, 0.05)
+                return
+            self._refocus(hwnd)   # the menu had focus; the user's app gets it back
+            if choice["kind"] in ("translate", "custom"):
+                self._do_action(text, choice, cfg, original, hwnd, anchor)
+                return
+            mode = choice["kind"]  # fix, or polish in the chosen style
 
         lang = detect_language(text)
         supported = languages.supported_for(cfg.get("model_profile"))
@@ -707,14 +733,14 @@ class FixelectApp:
                          f"Fixelect works in {supported_languages_line()}.", timeout=5500, anchor=anchor)
             return
 
-        if mode == "polish" and cfg.get("polish_preview", True):
+        if mode == "polish" and choice is None and cfg.get("polish_preview", True):
             fixed = self._polish_with_preview(text, cfg, hwnd, anchor)
             if fixed is None:
                 self._schedule_restore(original, 0.05)
                 return
             info = {}
         else:
-            fixed, info = self._compute(text, mode, cfg, anchor)
+            fixed, info = self._compute(text, mode, cfg, anchor, style=(choice or {}).get("style"))
             if fixed is None:  # cancelled
                 self._schedule_restore(original, 0.05)
                 self.hud("info", "Cancelled", "Your text was not changed.", timeout=2000, anchor=anchor)
@@ -734,16 +760,7 @@ class FixelectApp:
                 new_html = richtext.rewrite_cf_html(html, text, fixed)
             except Exception as e:
                 log_error(f"rich text mapping failed: {type(e).__name__}")
-        clip.set_text(fixed, private=True, html=new_html)
-        seq_after_set = clip.sequence()
-        time.sleep(0.03)
-        settle_modifiers()
-        send_ctrl(VK_V)
-        play_fix_sound(mode)
-        self._schedule_restore(original, CLIPBOARD_RESTORE_DELAY, only_if_seq=seq_after_set)
-
-        self._undo = {"hwnd": hwnd, "time": time.time()}
-        undo = [("Undo", lambda ctx=self._undo: self.jobs.put(("undo", ctx, time.time())))]
+        undo = self._paste(fixed, new_html, original, hwnd, mode)
         if mode == "polish" and not info.get("polish_fallback"):
             self.hud("polish", "Polished", "Formatting kept." if new_html else "", actions=undo,
                      timeout=5000, anchor=anchor)
@@ -754,8 +771,55 @@ class FixelectApp:
             self.hud("success", f"Fixed {plural(n, 'word')}" if n else "Fixed", detail, actions=undo,
                      timeout=5000, anchor=anchor)
 
-    def _compute(self, text, mode, cfg, anchor, style=None, variant=0):
-        """Run the pipeline with the card showing progress. Returns (text, info) or (None, info) if cancelled."""
+    def _paste(self, fixed, new_html, original, hwnd, sound):
+        """Replace the still-selected text with `fixed`. Returns the card's Undo action."""
+        clip.set_text(fixed, private=True, html=new_html)
+        seq_after_set = clip.sequence()
+        time.sleep(0.03)
+        self._refocus(hwnd)
+        settle_modifiers()
+        send_ctrl(VK_V)
+        play_fix_sound(sound)
+        self._schedule_restore(original, CLIPBOARD_RESTORE_DELAY, only_if_seq=seq_after_set)
+        self._undo = {"hwnd": hwnd, "time": time.time()}
+        return [("Undo", lambda ctx=self._undo: self.jobs.put(("undo", ctx, time.time())))]
+
+    def _refocus(self, hwnd):
+        """After the quick-action menu had focus, give it back to the user's app."""
+        if hwnd and user32.GetForegroundWindow() != hwnd:
+            from hud_win import force_foreground
+            force_foreground(hwnd)
+            wait_for_foreground(hwnd, 0.6)
+
+    def _choose_action(self, cfg, anchor):
+        """Show the quick-action menu and wait for the user's choice (None = closed)."""
+        import actions
+        choice = queue.Queue()
+        self.ui.open_menu(actions.menu_items(cfg), lambda item: actions.submenu(item, cfg), choice.put, anchor)
+        try:
+            return choice.get(timeout=300)
+        except queue.Empty:
+            return None
+
+    def _do_action(self, text, item, cfg, original, hwnd, anchor):
+        import actions
+        result, _info = self._compute(text, "action", cfg, anchor, action=item)
+        if result is None:
+            self._schedule_restore(original, 0.05)
+            self.hud("info", "Cancelled", "Your text was not changed.", timeout=2000, anchor=anchor)
+            return
+        if result.strip() == text.strip():
+            self._schedule_restore(original, 0.05)
+            self.hud("success", "Nothing to change", "The result is the same as your text.",
+                     timeout=2500, anchor=anchor)
+            return
+        undo = self._paste(result, None, original, hwnd, "polish")
+        self.hud("polish", actions.done_title(item), "", actions=undo, timeout=5000, anchor=anchor)
+
+    def _compute(self, text, mode, cfg, anchor, style=None, variant=0, action=None):
+        """Run the pipeline (or a quick action) with the card showing progress.
+        Returns (text, info) or (None, info) if cancelled."""
+        import actions
         info = {}
         opts = self._options(cfg, mode, style, variant, info)
         lead, core, trail = _split_edges(text)
@@ -766,8 +830,8 @@ class FixelectApp:
 
         self.cancel_event.clear()
         done = threading.Event()
-        long_job = chunking.needs_chunking(text, mode)
-        verb = "Fixing" if mode == "fix" else "Polishing"
+        long_job = actions.is_long(action, text) if action else chunking.needs_chunking(text, mode)
+        verb = actions.verb(action) if action else ("Fixing" if mode == "fix" else "Polishing")
         state = {"progress": None}
 
         def cancel_action():
@@ -795,7 +859,10 @@ class FixelectApp:
         try:
             if ENGINE == "embedded" and self.fix is not None and not self._engine().is_running():
                 self._wake_engine()
-            result = self._run(text, mode, opts, progress=progress, cancel=self.cancel_event)
+            if action:
+                result = self._run_action(text, action, progress=progress, cancel=self.cancel_event)
+            else:
+                result = self._run(text, mode, opts, progress=progress, cancel=self.cancel_event)
             return result, info
         except chunking.Cancelled:
             return None, info
@@ -965,6 +1032,10 @@ class FixelectApp:
         if fallbacks:
             reg(ID_FALLBACK_FIX, MOD_CONTROL | MOD_ALT, VK_F, "Ctrl+Alt+F", report=False)
             reg(ID_FALLBACK_POLISH, MOD_CONTROL | MOD_ALT, VK_P, "Ctrl+Alt+P", report=False)
+        # The quick-action menu works in every trigger mode.
+        menu_combo = cfg.get("menu_hotkey") or "Ctrl+Alt+Space"
+        m, v = parse_hotkey_string(menu_combo)
+        reg(ID_MENU, m & ~MOD_NOREPEAT, v, menu_combo)
         if mode == "double_tap" and self.listener is not None and not self.listener.active:
             errors.append("Double-tap detection is unavailable (keyboard hook failed).")
         self.hotkey_errors = errors
@@ -1142,6 +1213,7 @@ class FixelectApp:
         print(f"\n  Fixelect {APP_VERSION}  ·  engine: {ENGINE.upper()}")
         print(f"  {get_hotkey_label('fix'):<14} fix selected text")
         print(f"  {get_hotkey_label('polish'):<14} polish selected text")
+        print(f"  {get_menu_label():<14} quick actions: translate, your own actions")
         print("  Ctrl+Alt+Q     quit\n")
 
         msg = wintypes.MSG()
@@ -1152,6 +1224,9 @@ class FixelectApp:
                         break
                     if msg.wParam == ID_CANCEL:
                         self.cancel_event.set()
+                        continue
+                    if msg.wParam == ID_MENU:
+                        self.trigger("menu")
                         continue
                     self.trigger("polish" if msg.wParam in (ID_POLISH, ID_FALLBACK_POLISH) else "fix")
                 elif msg.message == WM_APP_RELOAD_HOTKEYS:
