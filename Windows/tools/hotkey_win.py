@@ -12,6 +12,7 @@ made every combo trigger two jobs, and in editors that copy the whole line on
 an empty Ctrl+C the second job duplicated the line into the document.
 """
 
+import collections
 import threading
 import time
 from typing import Callable, Optional
@@ -65,6 +66,8 @@ class WinHotkeyListener:
         self._suspended = False
         self._alt = _Tap()
         self._ctrl = _Tap()
+        # Windows' own time for each key, recorded as it arrives (see _stamp)
+        self._stamps = collections.deque(maxlen=64)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -101,7 +104,9 @@ class WinHotkeyListener:
         try:
             self._alt.reset()
             self._ctrl.reset()
-            self.listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
+            self._stamps.clear()
+            self.listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release,
+                                              win32_event_filter=self._stamp)
             self.listener.daemon = True
             self.listener.start()
             return True
@@ -136,10 +141,25 @@ class WinHotkeyListener:
 
     # -- callbacks (run on pynput's hook thread: keep them tiny) --------------
 
+    def _stamp(self, msg, data):
+        """pynput's event filter: runs in the hook the moment each key arrives.
+        Timing taps by Windows' own time (ms since boot, like time.monotonic)
+        instead of when the callback runs keeps a quick double-tap reliable
+        while the PC is busy, e.g. loading the model right after start-up."""
+        self._stamps.append(data.time / 1000.0)
+        return True
+
+    def _event_time(self):
+        """The time of the key being handled (one stamp per key, in order)."""
+        try:
+            return self._stamps.popleft()
+        except IndexError:
+            return time.monotonic()
+
     def _on_press(self, key, injected=False):
+        now = self._event_time()     # consume the stamp even for ignored keys
         if injected or self._suspended:
             return
-        now = time.monotonic()
         kind = self._kind(key)
         for name, tap in (("alt", self._alt), ("ctrl", self._ctrl)):
             if kind == name:
@@ -156,18 +176,18 @@ class WinHotkeyListener:
                 tap.last_tap_at = 0.0
 
     def _on_release(self, key, injected=False):
+        now = self._event_time()
         if injected or self._suspended:
             return
         kind = self._kind(key)
         if kind == "alt":
-            if self._register_tap(self._alt):
+            if self._register_tap(self._alt, now):
                 self._fire(self.on_fix)
         elif kind == "ctrl":
-            if self._register_tap(self._ctrl):
+            if self._register_tap(self._ctrl, now):
                 self._fire(self.on_polish)
 
-    def _register_tap(self, tap: _Tap) -> bool:
-        now = time.monotonic()
+    def _register_tap(self, tap: _Tap, now: float) -> bool:
         clean = tap.down_at and not tap.spoiled and (now - tap.down_at) <= self.TAP_MAX_HOLD
         tap.down_at = 0.0
         tap.spoiled = False

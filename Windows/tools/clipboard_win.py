@@ -228,9 +228,16 @@ def copied_from_empty_selection():
     is pressed with nothing selected. Fixing that and pasting it back would
     duplicate the line into the user's code, so treat it as "nothing selected".
     """
+    import richtext
     if not _open():
         return False
     try:
+        # VS Code and Cursor keep this metadata in Chromium's custom-data format.
+        f = _fmt("Chromium Web Custom MIME Data Format")
+        if f and _user32.IsClipboardFormatAvailable(f):
+            h = _user32.GetClipboardData(f)
+            if h and richtext.is_line_copy(_read_handle(h)):
+                return True
         f = _fmt("vscode-editor-data")
         if f and _user32.IsClipboardFormatAvailable(f):
             h = _user32.GetClipboardData(f)

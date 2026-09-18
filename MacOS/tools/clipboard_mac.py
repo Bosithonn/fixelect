@@ -218,6 +218,26 @@ def simulate_cmd_key(char: str) -> None:
                        capture_output=True, timeout=1.5)
 
 
+def copied_from_empty_selection() -> bool:
+    """True when the last copy was an editor's "copy the whole line" fallback.
+
+    VS Code, Cursor and other editors copy the entire current line when Cmd+C is
+    pressed with nothing selected; fixing it and pasting it back would duplicate
+    the line. Chromium-based editors keep their metadata in web custom data."""
+    if not _has_appkit:
+        return False
+    import richtext
+    try:
+        pb = _pb()
+        for t in ("vscode-editor-data", "org.chromium.web-custom-data"):
+            data = pb.dataForType_(t)
+            if data is not None and richtext.is_line_copy(bytes(data)):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def copy_selection(timeout: float = 0.8) -> bool:
     """Cmd+C and wait for the pasteboard to change. False means nothing was selected."""
     before = change_count()
@@ -227,7 +247,7 @@ def copy_selection(timeout: float = 0.8) -> bool:
         time.sleep(0.015)
         if change_count() != before:
             time.sleep(0.02)
-            return True
+            return not copied_from_empty_selection()
     return before == -1 and bool(get_text())
 
 

@@ -45,7 +45,9 @@ jobs:
       - name: Text tests
         run: python tests/test_text.py
       - name: Hotkey tests
-        run: python tests/test_hotkeys.py
+        run: |
+          python tests/test_hotkeys.py
+          python tests/test_hotkeys_win.py
       - name: Release tag matches the app version
         if: env.RELEASE_TAG != ''
         shell: bash

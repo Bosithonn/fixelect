@@ -232,7 +232,11 @@ class MacEmbeddedEngine:
                     time.sleep(0.2)
                 else:
                     self.stop()
-                    raise TimeoutError(f"llama-server was not ready within {timeout:.0f}s")
+                    if last:
+                        raise TimeoutError(f"llama-server was not ready within {timeout:.0f}s")
+                    # Metal can hang instead of failing (virtual Macs, a stuck GPU): use the CPU.
+                    print("  [Engine] GPU start timed out - retrying on the CPU")
+                    log_error(f"llama-server not ready within {timeout:.0f}s on Metal; using the CPU")
 
     def _close_conn(self):
         if self.conn:

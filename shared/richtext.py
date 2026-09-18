@@ -286,6 +286,19 @@ def map_spans(target, old, new):
     return spans
 
 
+_LINE_COPY_MARK = '"isFromEmptySelection":true'
+
+
+def is_line_copy(raw):
+    """True when clipboard metadata says the editor copied the whole line because
+    nothing was selected (VS Code, Cursor and other Chromium-based editors store
+    it as JSON, UTF-8 or UTF-16). Fixing that copy and pasting it back would
+    duplicate the line in the user's code."""
+    if not raw:
+        return False
+    return _LINE_COPY_MARK.encode("utf-8") in raw or _LINE_COPY_MARK.encode("utf-16-le") in raw
+
+
 def utf16_offset(text, index):
     """Python str index -> NSString (UTF-16) index, for macOS attributed strings."""
     return len(text[:index].encode("utf-16-le")) // 2

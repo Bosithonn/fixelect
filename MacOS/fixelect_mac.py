@@ -64,7 +64,7 @@ from version import APP_VERSION, RELEASES_URL  # noqa: E402
 MODEL = "qwen2.5"
 ENGINE = load_config().get("engine", "embedded")
 MAX_SELECTION_CHARS = 30000
-RESTORE_DELAY = 0.8
+RESTORE_DELAY = 1.5     # slow apps (Word, Electron) read the paste late; restoring sooner pasted the old clipboard
 HUD_DELAY = 0.35
 UNDO_WINDOW = 30.0
 
@@ -87,6 +87,53 @@ def acquire_single_instance():
         return True
     except OSError:
         return False
+
+
+def release_single_instance():
+    global _lock_handle
+    if _lock_handle is not None:
+        try:
+            _lock_handle.close()
+        except Exception:
+            pass
+        _lock_handle = None
+
+
+def offer_move_to_applications():
+    """Opened straight from the disk image (or a copy macOS "translocated" to a
+    random read-only folder), start-at-login points at a path that disappears and
+    the app stops working once the disk is ejected. Offer to move it. Returns
+    True when the moved copy was launched and this one should quit."""
+    if not getattr(sys, "frozen", False):
+        return False
+    exe = pathlib.Path(sys.executable).resolve()
+    bundle = next((p for p in exe.parents if p.suffix == ".app"), None)
+    where = str(exe)
+    if bundle is None or not ("/AppTranslocation/" in where or where.startswith("/Volumes/")):
+        return False
+    script = ('display dialog "Fixelect is running from the disk image. Move it to your Applications folder '
+              'so it keeps working after you eject the disk and can start when you log in." '
+              'with title "Fixelect" buttons {"Not Now", "Move to Applications"} '
+              'default button "Move to Applications" with icon note')
+    try:
+        answer = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=300).stdout
+    except Exception:
+        return False
+    if "Move to Applications" not in answer:
+        return False
+    target = pathlib.Path("/Applications/Fixelect.app")
+    try:
+        if target.exists():
+            import shutil
+            shutil.rmtree(target)
+        subprocess.run(["ditto", str(bundle), str(target)], check=True, capture_output=True, timeout=300)
+    except Exception as e:
+        log_error(f"move to Applications failed: {type(e).__name__}: {e}")
+        notify("Couldn't move Fixelect", "Drag Fixelect into your Applications folder, then open it from there.")
+        return False
+    log_error("moved to /Applications")
+    subprocess.Popen(["open", "-n", str(target)])
+    return True
 
 
 def running_daemon_pid():
@@ -540,12 +587,19 @@ class MacApp:
                 self.jobs.put(("switch_model", new.get("model_profile"), time.time()))
             cfg = new
 
-    def permission_watcher(self):
+    def permission_watcher(self, then_welcome=False):
         while not self._stopping and not check_accessibility_permissions(prompt=False):
             time.sleep(2.0)
-        if not self._stopping and self.listener:
+        if self._stopping:
+            return
+        if self.listener:
             self.listener.reload(load_config())
-            print("  [Fixelect] Accessibility granted - triggers active.")
+        print("  [Fixelect] Accessibility granted - triggers active.")
+        log_error("accessibility granted")
+        if then_welcome:
+            # First launch: the permission step came first; now show the tutorial.
+            time.sleep(1.0)
+            self.open_window("dashboard", "Welcome")
 
     def idle_watcher(self):
         while not self._stopping:
@@ -607,6 +661,9 @@ class MacApp:
             if pid:
                 os.kill(pid, signal.SIGUSR1)  # the running copy opens its dashboard
             return
+        if offer_move_to_applications():
+            release_single_instance()   # the moved copy takes over
+            return
 
         signal.signal(signal.SIGTERM, lambda *_: self.quit())
         signal.signal(signal.SIGINT, lambda *_: self.quit())
@@ -630,10 +687,11 @@ class MacApp:
         threading.Thread(target=self.idle_watcher, daemon=True).start()
         threading.Thread(target=self.update_watcher, daemon=True).start()
 
+        needs_welcome = just_set_up or not load_config().get("onboarding_done", False)
         if not check_accessibility_permissions(prompt=False):
             self.open_window("permissions")
-            threading.Thread(target=self.permission_watcher, daemon=True).start()
-        elif just_set_up or not load_config().get("onboarding_done", False):
+            threading.Thread(target=self.permission_watcher, args=(needs_welcome,), daemon=True).start()
+        elif needs_welcome:
             self.open_window("dashboard", "Welcome")
         elif not silent:
             self.open_window("dashboard")

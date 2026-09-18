@@ -144,8 +144,8 @@ def update_config(**changes) -> dict:
 
 
 def validate_hotkey(combo: str):
-    """(ok, message). pynput cannot swallow keys, so a shortcut must include
-    ⌘, ⌃ or ⌥ - otherwise the key would also be typed into the app."""
+    """(ok, message). A shortcut must include ⌘, ⌃ or ⌥ (or be an F-key):
+    a plain letter or ⇧+letter is what people type into documents."""
     tokens = [t.strip().lower().strip("<>") for t in (combo or "").replace("+", " ").split() if t.strip()]
     mods = {"cmd", "command", "ctrl", "control", "alt", "option", "opt", "shift"}
     keys = [t for t in tokens if t not in mods]

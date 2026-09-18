@@ -54,6 +54,13 @@ CASES = [
     ("html entities survive", lambda: "&amp;" in _roundtrip(
         "<!--StartFragment--><p>Tom &amp; Jery</p><!--EndFragment-->", "Tom & Jery", "Tom & Jerry"), True),
     ("count changes", lambda: R.count_changes("i has a apple", "I have an apple"), 3),
+    # "copy the whole line" in code editors (nothing selected)
+    ("line copy: VS Code metadata", lambda: R.is_line_copy(
+        b'{"version":1,"isFromEmptySelection":true,"multicursorText":null,"mode":"python"}'), True),
+    ("line copy: Chromium custom data (UTF-16)", lambda: R.is_line_copy(
+        ("vscode-editor-data" + '{"version":1,"isFromEmptySelection":true}').encode("utf-16-le")), True),
+    ("line copy: a real selection", lambda: R.is_line_copy(b'{"version":1,"isFromEmptySelection":false}'), False),
+    ("line copy: no metadata", lambda: R.is_line_copy(None), False),
     # chunking
     ("chunk: short text unchanged path", lambda: chunking.process("teh cat", _fake_fix), "the cat"),
     ("chunk: long text reassembles", lambda: chunking.process(("teh cat sat. " * 120).strip(), _fake_fix)

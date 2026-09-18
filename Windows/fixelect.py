@@ -106,7 +106,7 @@ MIN_PREFETCH_CHARS = 8
 MAX_PREFETCH_CHARS = 600
 
 MAX_SELECTION_CHARS = 30000     # long text is chunked, shows progress and can be cancelled
-CLIPBOARD_RESTORE_DELAY = 0.8   # give slow apps (Word, Slack, IDEs) time to read the paste
+CLIPBOARD_RESTORE_DELAY = 1.5   # give slow apps (Word, Slack, IDEs) time to read the paste
 HUD_DELAY = 0.35                # only show "Fixing…" when it takes longer than this
 UNDO_WINDOW = 30.0
 
@@ -224,6 +224,14 @@ def ensure_single_instance(on_show_callback):
                 threading.Thread(target=on_show_callback, daemon=True).start()
 
     threading.Thread(target=event_listener, daemon=True).start()
+
+
+def release_single_instance():
+    """Let the installer's "Fixelect is running" check pass during an update."""
+    global _single_instance_mutex
+    if _single_instance_mutex:
+        kernel32.CloseHandle(_single_instance_mutex)
+        _single_instance_mutex = None
 
 
 # --------------------------------------------------------------------------
@@ -1037,6 +1045,13 @@ class FixelectApp:
         import tempfile
         import updater
         path = updater.download_asset(info, "FixelectSetup.exe", tempfile.gettempdir(), progress, cancel)
+        # Free what the installer checks and replaces before it starts: the single-instance
+        # mutex (its "Fixelect is running" test) and the engine's llama-server files.
+        try:
+            self._engine().stop()
+        except Exception:
+            pass
+        release_single_instance()
         subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
                          close_fds=True)
         threading.Timer(0.5, self.quit).start()
