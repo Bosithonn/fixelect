@@ -184,9 +184,9 @@ def test_polish():
 
 
 def pick_from_menu(name, *keys):
-    """⌃⌥Space, wait for the quick-action menu, then press the given keys."""
+    """⌃⇧Space, wait for the quick-action menu, then press the given keys."""
     existing = {w.get("kCGWindowNumber") for w in fixelect_windows()}
-    press(KEY_SPACE, CTRL | OPT)
+    press(KEY_SPACE, CTRL | SHIFT)
     t0 = time.time()
     while time.time() - t0 < 30:
         if any(w.get("kCGWindowNumber") not in existing for w in fixelect_windows()):

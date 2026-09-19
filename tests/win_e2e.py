@@ -6,11 +6,13 @@ text; the test selects it and uses Fixelect the way a person does:
 
   Fix        Ctrl+Alt+F
   Polish     Ctrl+Alt+P, then Enter in the preview
-  Translate  Ctrl+Alt+Space, 4 (Translate…), 7 (Russian)
-  Action     Ctrl+Alt+Space, 5 ("Bullet points")
+  Translate  Ctrl+Alt+M, 4 (Translate…), 7 (Russian)
+  Action     Ctrl+Alt+M, 5 ("Bullet points")
 
-Synthetic modifier taps can't trigger the double-tap (Fixelect ignores injected
-keys on purpose), so Fix and Polish use their always-on backup shortcuts.
+Synthetic modifier taps can't trigger a double-tap (Fixelect ignores injected
+keys on purpose), so Fix and Polish use their always-on backup shortcuts and
+the workflow sets the menu to a custom shortcut, Ctrl+Alt+M. The default,
+double-tap Shift, is covered by tests/test_hotkeys_win.py.
 Run: python tests/win_e2e.py [screenshot_dir]
 """
 
@@ -38,7 +40,7 @@ user32.GetClassNameW.argtypes = [w.HWND, w.LPWSTR, ctypes.c_int]
 _ENUM = ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
 
 OUT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "e2e-shots")
-VK = {"ctrl": 0x11, "alt": 0x12, "a": 0x41, "f": 0x46, "p": 0x50, "space": 0x20, "enter": 0x0D,
+VK = {"ctrl": 0x11, "alt": 0x12, "a": 0x41, "f": 0x46, "m": 0x4D, "p": 0x50, "space": 0x20, "enter": 0x0D,
       "4": 0x34, "5": 0x35, "7": 0x37}
 failures = []
 
@@ -204,11 +206,11 @@ def main():
         ("polish", "hey can u send me the report by friday i need it for the meeting", ("ctrl", "alt", "p"),
          lambda t: None if len(t.strip()) >= 20 else "unexpected result", (), True),
         ("translate", "Good morning, I will send you the report tomorrow before the meeting.",
-         ("ctrl", "alt", "space"),
+         ("ctrl", "alt", "m"),
          lambda t: None if sum(1 for c in t.lower() if "а" <= c <= "я" or c == "ё") >= 15 else "not Russian",
          ("4", "7"), False),
         ("action", "We need to buy milk, eggs and bread, then call the plumber about the kitchen sink and pay "
-                   "the electricity bill before Friday.", ("ctrl", "alt", "space"),
+                   "the electricity bill before Friday.", ("ctrl", "alt", "m"),
          lambda t: None if sum(1 for ln in t.splitlines() if ln.strip().startswith(("-", "•", "*"))) >= 2
          else "no bulleted list", ("5",), False),
     ]

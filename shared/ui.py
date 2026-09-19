@@ -471,8 +471,9 @@ HELP_ITEMS = [
      "Fixelect fixes English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. "
      "Uzbek (beta) works with the Gemma 4 model. Other languages are left unchanged on purpose."),
     ("How do I translate, or use my own actions?",
-     "Select text and press the quick-action shortcut (Ctrl+Alt+Space on Windows, ⌃⌥Space on a Mac), then "
-     "press a number: Translate… lists the languages. Add your own actions, like “Reply politely”, under Actions."),
+     "Select text and press the quick-action shortcut (double-tap Shift on Windows, ⌃⇧Space on a Mac; "
+     "change it under Actions), then press a number: Translate… lists the languages. Add your own actions, "
+     "like “Reply politely”, under Actions."),
     ("The shortcut doesn't work",
      "Another app may use the same keys. Pick a different preset in Shortcuts; the status line there shows conflicts."),
     ("The first fix after a break is slow",
@@ -914,13 +915,23 @@ class Dashboard(_Window):
 
     def _build_actions(self, page):
         cfg = C.load_config()
-        head = tk.Frame(page, bg=BG)
-        head.pack(fill="x")
-        label(head, "Quick actions", "title").pack(side="left")
-        keycaps(head, C.get_menu_keycaps(cfg)).pack(side="right")
-        label(page, "Select text in any app and press this shortcut: a menu offers Fix, Polish in any style, "
+        label(page, "Quick actions", "title").pack(fill="x")
+        label(page, "Select text in any app and press the shortcut: a menu offers Fix, Polish in any style, "
                     "Translate and the actions below. Press a number to choose.",
-              "small", TEXT_2, wrap=580).pack(fill="x", pady=(px(4), px(12)))
+              "small", TEXT_2, wrap=580).pack(fill="x", pady=(px(4), px(10)))
+        sc = tk.Frame(page, bg=BG)
+        sc.pack(fill="x")
+        label(sc, "Shortcut", "small_b", TEXT_2).pack(side="left", padx=(0, px(10)))
+        self.menu_caps = tk.Frame(sc, bg=BG)
+        self.menu_caps.pack(side="left")
+        Button(sc, "Reset", self._reset_menu_hotkey, "ghost", height=30, font=K.FONTS["small_b"],
+               padx=10).pack(side="right")
+        ShortcutRecorder(sc, "", self._save_menu_hotkey, on_start=lambda: self.services.suspend_hotkeys(True),
+                         on_end=lambda: self.services.suspend_hotkeys(False), width=150).pack(side="right",
+                                                                                            padx=(0, px(6)))
+        self.menu_status = label(page, "", "small", TEXT_2, wrap=580)
+        self.menu_status.pack(fill="x", pady=(px(6), px(10)))
+        self._render_menu_shortcut()
 
         foot = tk.Frame(page, bg=BG)
         foot.pack(side="bottom", fill="x", pady=(px(10), 0))
@@ -945,6 +956,42 @@ class Dashboard(_Window):
         label(page, "Your actions", "small_b", TEXT_2).pack(fill="x", pady=(0, px(6)))
         self.act_list = self._scroll_page(page, 230)
         self._render_actions()
+
+    def _render_menu_shortcut(self, note=None):
+        for w in self.menu_caps.winfo_children():
+            w.destroy()
+        keycaps(self.menu_caps, C.get_menu_keycaps()).pack(anchor="w")
+        default = "double-tap Shift" if not IS_MAC else "⌃⇧Space"
+        self.menu_status.configure(
+            text=note or f"Click the button to record a different shortcut. Reset goes back to {default}.",
+            fg=TEXT_3)
+
+    def _save_menu_hotkey(self, combo):
+        validate = getattr(C, "validate_hotkey", lambda c: (True, ""))
+        ok, msg = validate(combo)
+        if not ok:
+            self.menu_status.configure(text=msg, fg=RED)
+            return
+        C.update_config(menu_hotkey=combo)
+        self._menu_hotkey_applied()
+
+    def _reset_menu_hotkey(self):
+        C.update_config(menu_hotkey=C.MENU_DEFAULT_HOTKEY)
+        self._menu_hotkey_applied()
+
+    def _menu_hotkey_applied(self):
+        self.services.hotkeys_changed()
+        self._render_menu_shortcut("Applying…")
+        self.after(500, self._check_menu_hotkey)
+
+    def _check_menu_hotkey(self):
+        label_text = C.get_menu_label()
+        clash = [e for e in (self.services.hotkey_errors() or []) if label_text.replace(" ", "") in e.replace(" ", "")
+                 or "Quick actions" in e]
+        if clash:
+            self.menu_status.configure(text="  ".join(clash) + " Record a different shortcut.", fg=RED)
+        else:
+            self.menu_status.configure(text=f"✓  {label_text} opens quick actions in every app.", fg=GREEN)
 
     def _action_entry(self, parent, hint):
         label(parent, hint, "small", TEXT_2).pack(fill="x", pady=(px(8), px(4)))

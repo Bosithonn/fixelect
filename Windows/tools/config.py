@@ -24,7 +24,7 @@ DEFAULT_CONFIG = {
     "hotkey_polish": "double_control",
     "custom_fix": "Ctrl+Alt+F",
     "custom_polish": "Ctrl+Alt+P",
-    "menu_hotkey": "Ctrl+Alt+Space",    # quick-action menu (Fix, Polish, Translate, your actions)
+    "menu_hotkey": "double_shift",      # quick-action menu: "double_shift" or a combination
     "prefetch_enabled": False,          # speculative fixes of selected text (uses more power)
     "polish_style": "professional",     # see check_guard.POLISH_STYLES
     "custom_instruction": "",           # the writer's own style note for Polish
@@ -97,16 +97,33 @@ def get_hotkey_label(mode: str = "fix", config: dict = None) -> str:
     return " + ".join(caps)
 
 
+MENU_DOUBLE_SHIFT = "double_shift"
+MENU_DEFAULT_HOTKEY = MENU_DOUBLE_SHIFT
+# 1.2.0 used Ctrl+Alt+Space, which is the Claude app's shortcut: move it to the new default.
+_OLD_MENU_DEFAULTS = {"ctrl+alt+space"}
+
+
+def get_menu_hotkey(config: dict = None) -> str:
+    """The quick-action menu shortcut: "double_shift" or a combination like "Ctrl+Shift+M"."""
+    raw = str((config if config is not None else load_config()).get("menu_hotkey") or "").strip()
+    if not raw or raw.replace(" ", "").lower() in _OLD_MENU_DEFAULTS:
+        return MENU_DEFAULT_HOTKEY
+    return raw
+
+
 def get_menu_keycaps(config: dict = None) -> list:
-    """Key caps of the quick-action menu shortcut, e.g. ['Ctrl', 'Alt', 'Space']."""
-    raw = (config if config is not None else load_config()).get("menu_hotkey") or "Ctrl+Alt+Space"
+    """Key caps of the quick-action menu shortcut, e.g. ['Shift', 'Shift'] or ['Ctrl', 'Shift', 'M']."""
+    raw = get_menu_hotkey(config)
+    if raw == MENU_DOUBLE_SHIFT:
+        return ["Shift", "Shift"]
     names = {"ctrl": "Ctrl", "control": "Ctrl", "alt": "Alt", "shift": "Shift", "win": "Win", "space": "Space"}
     tokens = [t.strip().lower().strip("<>") for t in raw.replace("+", " ").split() if t.strip()]
     return [names.get(t, t.upper()) for t in tokens]
 
 
 def get_menu_label(config: dict = None) -> str:
-    return " + ".join(get_menu_keycaps(config))
+    caps = get_menu_keycaps(config)
+    return f"{caps[0]} {caps[1]}" if len(caps) == 2 and caps[0] == caps[1] else " + ".join(caps)
 
 
 def parse_hotkey_string(combo: str) -> tuple:

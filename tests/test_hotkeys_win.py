@@ -1,4 +1,4 @@
-"""Model-free tests for the Windows double-tap (Alt Alt / Ctrl Ctrl).
+"""Model-free tests for the Windows double-taps (Alt Alt / Ctrl Ctrl / Shift Shift).
 
 Drives WinHotkeyListener's callbacks directly with fake keys and Windows key
 timestamps, so it runs on every platform. Run: python tests/test_hotkeys_win.py
@@ -12,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "Windows" / "tools"))
 sys.path.insert(0, str(ROOT / "shared"))
 
+import config as C  # noqa: E402
 import hotkey_win as H  # noqa: E402
 
 
@@ -20,7 +21,7 @@ class Key:
         self.vk = vk
 
 
-ALT, CTRL, A = Key(164), Key(162), Key(65)
+ALT, CTRL, SHIFT, A = Key(164), Key(162), Key(160), Key(65)
 
 
 class Data:
@@ -30,10 +31,12 @@ class Data:
         self.time = ms
 
 
-def make():
+def make(**cfg):
     fired = []
+    config = {"trigger_mode": "double_tap"}
+    config.update(cfg)
     lst = H.WinHotkeyListener(on_fix=lambda: fired.append("fix"), on_polish=lambda: fired.append("polish"),
-                              config={"trigger_mode": "double_tap"})
+                              config=config, on_menu=lambda: fired.append("menu"))
     lst._fire = lambda cb: cb()          # run callbacks inline
     return lst, fired
 
@@ -50,16 +53,57 @@ def taps(lst, k, times):
         key(lst, k, False, up_ms)
 
 
+QUICK = [(1000, 1050), (1150, 1200)]
+
+
 def t_double_alt():
     lst, fired = make()
-    taps(lst, ALT, [(1000, 1050), (1150, 1200)])
+    taps(lst, ALT, QUICK)
     return fired == ["fix"], fired
 
 
 def t_double_ctrl():
     lst, fired = make()
-    taps(lst, CTRL, [(1000, 1050), (1150, 1200)])
+    taps(lst, CTRL, QUICK)
     return fired == ["polish"], fired
+
+
+def t_double_shift_opens_menu():
+    lst, fired = make()
+    taps(lst, SHIFT, QUICK)
+    return fired == ["menu"], fired
+
+
+def t_menu_in_classic_mode():
+    # Combos for Fix/Polish, but Shift Shift still opens the menu (and Alt Alt does nothing).
+    lst, fired = make(trigger_mode="classic")
+    taps(lst, ALT, QUICK)
+    taps(lst, SHIFT, [(2000, 2050), (2150, 2200)])
+    return fired == ["menu"], fired
+
+
+def t_combo_menu_turns_off_shift_taps():
+    lst, fired = make(menu_hotkey="Ctrl+Shift+M")
+    taps(lst, SHIFT, QUICK)
+    return fired == [] and lst._menu_tap is False, fired
+
+
+def t_typing_capitals_never_opens_menu():
+    lst, fired = make()
+    for base in (1000, 1150):                 # Shift+A, Shift+S typed quickly
+        key(lst, SHIFT, True, base)
+        key(lst, A, True, base + 20)
+        key(lst, A, False, base + 40)
+        key(lst, SHIFT, False, base + 60)
+    return fired == [], fired
+
+
+def t_shift_click_never_opens_menu():
+    lst, fired = make()
+    taps(lst, SHIFT, [(1000, 1050)])
+    lst._on_click(0, 0, None, True)           # Shift-click to extend a selection
+    taps(lst, SHIFT, [(1150, 1200)])
+    return fired == [], fired
 
 
 def t_late_callbacks_use_windows_time():
@@ -101,15 +145,24 @@ def t_injected_keys_keep_stamps_in_step():
     lst, fired = make()
     key(lst, CTRL, True, 900, injected=True)
     key(lst, CTRL, False, 910, injected=True)
-    taps(lst, ALT, [(1000, 1050), (1150, 1200)])
+    taps(lst, ALT, QUICK)
     return fired == ["fix"], fired
 
 
 def t_suspended():
     lst, fired = make()
     lst.suspend(True)
-    taps(lst, ALT, [(1000, 1050), (1150, 1200)])
+    taps(lst, ALT, QUICK)
+    taps(lst, SHIFT, [(2000, 2050), (2150, 2200)])
     return fired == [], fired
+
+
+def t_config_default_and_migration():
+    got = (C.get_menu_hotkey({}), C.get_menu_hotkey({"menu_hotkey": "Ctrl+Alt+Space"}),
+           C.get_menu_hotkey({"menu_hotkey": "ctrl + alt + space"}), C.get_menu_hotkey({"menu_hotkey": "Ctrl+Shift+M"}),
+           C.get_menu_label({}), C.get_menu_label({"menu_hotkey": "Ctrl+Shift+M"}))
+    want = ("double_shift", "double_shift", "double_shift", "Ctrl+Shift+M", "Shift Shift", "Ctrl + Shift + M")
+    return got == want, got
 
 
 def main():

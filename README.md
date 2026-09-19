@@ -36,7 +36,7 @@ It's been a long day, and I can't seem to focus on the task.
 | :--- | :--- | :--- | :--- |
 | **Fix** | Double-tap `Alt` | Double-tap `⌥ Option` | Typos, spelling and grammar. Your words and voice stay. |
 | **Polish** | Double-tap `Ctrl` | Double-tap `⇧ Shift` | A clearer rewrite, shown as a preview first. |
-| **Quick actions** | `Ctrl + Alt + Space` | `⌃ ⌥ Space` | A menu: **Translate**, other Polish styles and **your own actions**. |
+| **Quick actions** | Double-tap `Shift` | `⌃ ⇧ Space` | A menu: **Translate**, other Polish styles and **your own actions**. |
 
 You can change both in Settings.
 

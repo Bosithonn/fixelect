@@ -41,13 +41,16 @@ except ImportError:  # pragma: no cover - not macOS
     NSEvent = None
 
 try:
-    from config_mac import load_config, log_error
+    from config_mac import load_config, log_error, get_menu_hotkey
 except ImportError:  # pragma: no cover
     def load_config():
         return {"trigger_mode": "double_tap"}
 
     def log_error(message):
         pass
+
+    def get_menu_hotkey(config=None):
+        return "<ctrl>+<shift>+<space>"
 
 
 def _event_time(event) -> float:
@@ -222,7 +225,7 @@ class MacHotkeyListener:
                  on_menu: Optional[Callable] = None):
         self.on_fix = on_fix
         self.on_polish = on_polish
-        self.on_menu = on_menu    # the quick-action menu (⌃⌥Space), in every trigger mode
+        self.on_menu = on_menu    # the quick-action menu (⌃⇧Space by default), in every trigger mode
         self.on_quit = on_quit  # kept for API compatibility; no global quit key
         self.config = config or load_config()
         self._lock = threading.RLock()
@@ -307,7 +310,7 @@ class MacHotkeyListener:
             if parsed:
                 self._combos[parsed] = cb
         if self.on_menu is not None:
-            parsed = parse_combo(self.config.get("menu_hotkey") or "<ctrl>+<alt>+<space>")
+            parsed = parse_combo(get_menu_hotkey(self.config))
             if parsed and parsed not in self._combos:
                 self._combos[parsed] = self.on_menu
         self._double_tap = mode == "double_tap"

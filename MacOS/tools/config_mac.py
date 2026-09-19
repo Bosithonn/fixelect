@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
     "hotkey_polish": "double_shift",
     "custom_fix": "<cmd>+<alt>+f",
     "custom_polish": "<cmd>+<alt>+p",
-    "menu_hotkey": "<ctrl>+<alt>+<space>",   # quick-action menu (Fix, Polish, Translate, your actions)
+    "menu_hotkey": "<ctrl>+<shift>+<space>",  # quick-action menu (Fix, Polish, Translate, your actions)
     "polish_style": "professional",     # see check_guard.POLISH_STYLES
     "custom_instruction": "",           # the writer's own style note for Polish
     "polish_preview": True,             # show Polish results before replacing
@@ -83,9 +83,22 @@ def get_hotkey_label(mode: str = "fix", config: dict = None) -> str:
     return "".join(caps)
 
 
+MENU_DEFAULT_HOTKEY = "<ctrl>+<shift>+<space>"
+# 1.2.0 used ⌃⌥Space, which is macOS's "next input source" shortcut: move it to the new default.
+_OLD_MENU_DEFAULTS = {"<ctrl>+<alt>+<space>"}
+
+
+def get_menu_hotkey(config: dict = None) -> str:
+    """The quick-action menu shortcut, e.g. '<ctrl>+<shift>+<space>'."""
+    raw = str((config if config is not None else load_config()).get("menu_hotkey") or "").strip()
+    if not raw or raw.replace(" ", "").lower() in _OLD_MENU_DEFAULTS:
+        return MENU_DEFAULT_HOTKEY
+    return raw
+
+
 def get_menu_keycaps(config: dict = None) -> list:
-    """Key caps of the quick-action menu shortcut, e.g. ['⌃', '⌥', 'Space']."""
-    raw = (config if config is not None else load_config()).get("menu_hotkey") or "<ctrl>+<alt>+<space>"
+    """Key caps of the quick-action menu shortcut, e.g. ['⌃', '⇧', 'Space']."""
+    raw = get_menu_hotkey(config)
     names = {"cmd": "⌘", "command": "⌘", "alt": "⌥", "option": "⌥", "opt": "⌥", "ctrl": "⌃",
              "control": "⌃", "shift": "⇧", "space": "Space"}
     tokens = [t.strip().lower().strip("<>") for t in raw.replace("+", " ").split() if t.strip()]

@@ -82,6 +82,8 @@ from config import (  # noqa: E402
     get_config_dir,
     get_hotkey_label,
     get_menu_label,
+    get_menu_hotkey,
+    MENU_DOUBLE_SHIFT,
     parse_hotkey_string,
     validate_hotkey,
     log_error,
@@ -1032,11 +1034,17 @@ class FixelectApp:
         if fallbacks:
             reg(ID_FALLBACK_FIX, MOD_CONTROL | MOD_ALT, VK_F, "Ctrl+Alt+F", report=False)
             reg(ID_FALLBACK_POLISH, MOD_CONTROL | MOD_ALT, VK_P, "Ctrl+Alt+P", report=False)
-        # The quick-action menu works in every trigger mode.
-        menu_combo = cfg.get("menu_hotkey") or "Ctrl+Alt+Space"
-        m, v = parse_hotkey_string(menu_combo)
-        reg(ID_MENU, m & ~MOD_NOREPEAT, v, menu_combo)
-        if mode == "double_tap" and self.listener is not None and not self.listener.active:
+        # The quick-action menu works in every trigger mode: double-tap Shift (the
+        # keyboard hook) or a combination registered here.
+        menu_combo = get_menu_hotkey(cfg)
+        if menu_combo != MENU_DOUBLE_SHIFT:
+            ok, msg = validate_hotkey(menu_combo)
+            if ok:
+                m, v = parse_hotkey_string(menu_combo)
+                reg(ID_MENU, m & ~MOD_NOREPEAT, v, menu_combo)
+            else:
+                errors.append(f"Quick actions {menu_combo}: {msg}")
+        if (self.listener is not None and self.listener.needed and not self.listener.active):
             errors.append("Double-tap detection is unavailable (keyboard hook failed).")
         self.hotkey_errors = errors
 
@@ -1182,6 +1190,7 @@ class FixelectApp:
             on_fix=lambda: self.trigger("fix"),
             on_polish=lambda: self.trigger("polish"),
             config=cfg,
+            on_menu=lambda: self.trigger("menu"),
         )
         self.listener.start()
         self.apply_system_hotkeys()

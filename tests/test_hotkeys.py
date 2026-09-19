@@ -219,17 +219,48 @@ def t_capture_keys():
     return ok, (swallowed, passed, combo, after, seen, fired)
 
 
+def _menu_listener(**cfg):
+    fired = []
+    lst = H.MacHotkeyListener(on_fix=lambda: fired.append("fix"), on_polish=lambda: fired.append("polish"),
+                              config=cfg, on_menu=lambda: fired.append("menu"))
+    lst._fire = lambda cb: cb()
+    lst._configure()
+    return lst, fired
+
+
 def t_menu_shortcut_in_every_mode():
     got = []
     for mode in ("double_tap", "option_space", "classic", "custom"):
-        fired = []
-        lst = H.MacHotkeyListener(on_fix=lambda: fired.append("fix"), on_polish=lambda: fired.append("polish"),
-                                  config={"trigger_mode": mode}, on_menu=lambda: fired.append("menu"))
-        lst._fire = lambda cb: cb()
-        lst._configure()
-        swallowed = lst._on_key(49, CTRL | OPT, False)   # ⌃⌥Space
+        lst, fired = _menu_listener(trigger_mode=mode)
+        swallowed = lst._on_key(49, CTRL | SHIFT, False)   # ⌃⇧Space
         got.append((mode, fired, swallowed))
     return all(f == ["menu"] and s for _m, f, s in got), got
+
+
+def t_old_menu_shortcut_moves_off_input_switching():
+    # 1.2.0 saved ⌃⌥Space, macOS's "next input source": it must reach macOS again.
+    lst, fired = _menu_listener(trigger_mode="double_tap", menu_hotkey="<ctrl>+<alt>+<space>")
+    old = lst._on_key(49, CTRL | OPT, False)
+    new = lst._on_key(49, CTRL | SHIFT, False)
+    return (old, new, fired) == (False, True, ["menu"]), (old, new, fired)
+
+
+def t_custom_menu_shortcut():
+    lst, fired = _menu_listener(trigger_mode="double_tap", menu_hotkey="Ctrl+Option+M")
+    return lst._on_key(46, CTRL | OPT, False) and fired == ["menu"], fired
+
+
+def t_menu_chord_is_not_a_shift_tap():
+    # Pressing ⌃ then ⇧ then Space must not also count as a Shift tap for Polish.
+    lst, fired = _menu_listener(trigger_mode="double_tap")
+    for _ in range(2):
+        lst._on_flags(CTRL)
+        lst._on_flags(CTRL | SHIFT)
+        lst._on_key(49, CTRL | SHIFT, False)
+        lst._on_flags(CTRL)
+        lst._on_flags(0)
+        CLOCK.sleep(0.1)
+    return fired == ["menu", "menu"], fired
 
 
 def main():
