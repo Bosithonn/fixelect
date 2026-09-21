@@ -96,7 +96,7 @@ How to open Fixelect
 3. Open System Settings > Privacy & Security, scroll down and click
    "Open Anyway" next to Fixelect. Enter your Mac password.
 
-4. Open Fixelect again. Setup downloads the AI model (about 2 GB).
+4. Open Fixelect again. Setup downloads the AI model (1 to 3 GB).
 
 5. Allow Accessibility when asked, so Fixelect can fix the text you select.
 

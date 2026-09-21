@@ -65,19 +65,13 @@ def detect_mac_hardware() -> dict:
         is_gpu = False
 
     # 2. Intelligent Model Recommendation based on Unified Memory
+    # Gemma 4 E2B fixes the most in tests/accuracy_benchmark.py and covers the
+    # most languages; it needs about 3.5 GB of memory while it runs.
     if is_apple_silicon:
-        if ram_gb >= 24:
-            rec_model = "7b"      # High-end M-series with 24GB+ handles 7B with ease
-        elif ram_gb >= 12:
-            rec_model = "3b"      # Sweet spot for 16GB–18GB M-series Macs
-        else:
-            rec_model = "3b"      # 8GB unified memory comfortably runs Qwen 2.5 3B Q4 (2.0GB)
+        rec_model = "gemma4-e2b" if ram_gb >= 8 else "1.5b"
     else:
         # Intel Mac fallback
-        if ram_gb >= 16:
-            rec_model = "3b"
-        else:
-            rec_model = "1.5b"
+        rec_model = "gemma4-e2b" if ram_gb >= 16 else "1.5b"
 
     return {
         "is_gpu": is_gpu,

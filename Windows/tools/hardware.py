@@ -148,14 +148,17 @@ def detect_hardware():
 
 def recommend_model(hw):
     """
-    Intelligently recommend the optimal model based on hardware specs:
-    - Dedicated GPU with >= 3.5 GB VRAM: "3b" (Quality & high linguistic nuance)
-    - CPU-only or lower VRAM: "1.5b" (Speed & energy efficiency)
+    Recommend the model that fits this computer:
+    - A graphics card with >= 3.5 GB, or 12 GB RAM and 6+ cores: Gemma 4 E2B. In
+      tests/accuracy_benchmark.py it fixes the most (16/20 hard texts against Qwen
+      2.5 3B's 10/20), covers the most languages and is as fast as the 3B, on a
+      graphics card and on the processor alike.
+    - Anything smaller: Qwen 2.5 1.5B, the fastest.
     """
     if hw["is_gpu"] and hw.get("vram_gb", 0) >= 3.5:
-        return "3b"
+        return "gemma4-e2b"
     elif hw.get("ram_gb", 8) >= 12 and hw.get("total_cores", 4) >= 6:
-        return "3b"
+        return "gemma4-e2b"
     return "1.5b"
 
 

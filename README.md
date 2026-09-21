@@ -61,7 +61,7 @@ You can change both in Settings.
 - **No selecting needed.** Just typed a line? Press the shortcut and Fixelect fixes it up to the cursor.
 - **Translate and your own actions.** One shortcut opens a menu: translate into another language, or run actions you write yourself, like "Bullet points", "Summarize" or "Reply politely". All offline.
 - **Five polish styles.** Professional, Friendly, Concise, Formal and Shorter, plus your own note like "Use British spelling".
-- **Many languages.** English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. Uzbek (beta) with the optional Gemma 4 model.
+- **Many languages.** English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. Uzbek (beta) too, with Gemma 4.
 - **Free and open source** under the MIT License.
 
 <p align="center">
@@ -89,7 +89,7 @@ Or skip steps 2 and 3 by pasting this into Terminal:
 xattr -dr com.apple.quarantine /Applications/Fixelect.app && open /Applications/Fixelect.app
 ```
 
-On first launch, Fixelect downloads the AI model you choose. The recommended one, Qwen 2.5 3B, is 2 GB. Each download is checked against its official SHA-256.
+On first launch, Fixelect downloads the AI model you choose. It recommends Google's Gemma 4 E2B (3.1 GB), which fixed the most in our tests, or Qwen 2.5 1.5B (1 GB) on smaller computers. Each download is checked against its official SHA-256.
 
 The installers aren't code-signed yet, which is why those warnings appear. Every release file has a `.sha256` checksum next to it.
 

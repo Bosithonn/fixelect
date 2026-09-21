@@ -10,6 +10,20 @@ import modelfetch
 from version import APP_VERSION
 
 MODELS = {
+    "gemma4-e2b": {
+        "name": "Gemma 4 E2B — Most accurate",
+        "short_name": "Gemma 4 E2B",
+        "filename": "gemma-4-E2B-it-Q4_K_M.gguf",
+        "sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8",
+        "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+        "size_bytes": 3106738272,
+        "approx_mb": 2963,
+        "badge_size": "3.1 GB",
+        "badge_rec": "RECOMMENDED",
+        "tag": "Most accurate",
+        "desc": "Google's Gemma 4. Fixes the most mistakes in long sentences, in English and Spanish, French, German, Russian and more, plus Uzbek (beta).",
+        "ollama_blob": "",
+    },
     "3b": {
         "name": "Qwen 2.5 3B — High Quality & Nuance",
         "short_name": "Qwen 2.5 3B",
@@ -19,23 +33,9 @@ MODELS = {
         "size_bytes": 2104932768,
         "approx_mb": 2007,
         "badge_size": "2.0 GB",
-        "badge_rec": "RECOMMENDED (GPU 4GB+)",
-        "desc": "Preserves 100% of your voice, corrects nuanced grammar, sub-second on GPU.",
+        "badge_rec": "PREVIOUS DEFAULT",
+        "desc": "The previous default. Quick and careful, but fixes fewer mistakes in long sentences.",
         "ollama_blob": "sha256-5ee4f07cdb9beadbbb293e85803c569b01bd37ed059d2715faa7bb405f31caa6",
-    },
-    "gemma4-e2b": {
-        "name": "Gemma 4 E2B — Best for other languages",
-        "short_name": "Gemma 4 E2B",
-        "filename": "gemma-4-E2B-it-Q4_K_M.gguf",
-        "sha256": "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8",
-        "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
-        "size_bytes": 3106738272,
-        "approx_mb": 2963,
-        "badge_size": "3.1 GB",
-        "badge_rec": "MORE LANGUAGES",
-        "tag": "More languages",
-        "desc": "Google's Gemma 4. Best for Spanish, French, German, Russian and more, plus Uzbek (beta). A little slower.",
-        "ollama_blob": "",
     },
     "1.5b": {
         "name": "Qwen 2.5 1.5B — Fast & Compact",

@@ -62,9 +62,59 @@ FIX = [
     ("glued", "I will do it asap and let you know",
      ["I will do it as soon as possible and let you know", "I will do it ASAP and let you know"]),
     ("repeat", "I think that that is the the right answer", ["I think that that is the right answer"]),
-    ("punct", "hello ,how are you doing today", ["Hello, how are you doing today", "hello, how are you doing today"]),
+    ("punct", "hello ,how are you doing today", ["Hello, how are you doing today", "hello, how are you doing today",
+                                                "Hello, how are you doing today?"]),
     ("punct", "i dont know what to do", ["I don't know what to do"]),
     ("punct", "whats the plan for tonight", ["What's the plan for tonight", "What's the plan for tonight?"]),
+]
+
+# Harder, longer, real-life text with several errors each: (category, input, must appear, must be gone).
+# Checked as case-insensitive phrases ("a|b" = either), and the result may not be rewritten beyond recognition.
+HARD = [
+    ("email", "Hi John, i wanted to follow up on our meeting yesterday. Could you send me the updated "
+              "figures untill friday? I'm not sure weather the budget was aproved.",
+     ["until", "Friday", "whether", "approved"], ["untill", "weather", "aproved"]),
+    ("email", "Thank you for you're quick responce, we will review the propsal and get back to you "
+              "early next week.",
+     ["your", "response", "proposal"], ["you're", "responce", "propsal"]),
+    ("email", "Unfortunatly I wont be able to attend the conferance on monday due to a schedulling conflict.",
+     ["Unfortunately", "won't", "conference", "Monday", "scheduling"],
+     ["Unfortunatly", "wont", "conferance", "schedulling"]),
+    ("chat", "hey r u coming tonite? we are meeting at the resturant near the libary at 8",
+     ["tonight", "restaurant", "library"], ["tonite", "resturant", "libary"]),
+    ("chat", "omg i totaly forgot about the deadline, can we push it to tommorow morning",
+     ["totally", "tomorrow"], ["totaly", "tommorow"]),
+    ("agreement", "The list of items that we ordered last month are still missing from the warehouse.",
+     ["is still missing"], ["are still missing"]),
+    ("agreement", "Each of the students have submitted their assignment on time.",
+     ["has submitted"], ["have submitted"]),
+    ("agreement", "Neither the manager nor the employees was informed about the change.",
+     ["were informed"], ["was informed"]),
+    ("tense", "Last week we have finished the migration and everything work fine since then.",
+     ["finished", "has worked|has been working|have worked"], ["have finished"]),
+    ("tense", "When I arrived, the train already left, so I take a taxi.",
+     ["had already left|had left", "took"], ["take a taxi"]),
+    ("preposition", "I am interested for this position and I am good in communication.",
+     ["interested in", "good at"], ["interested for", "good in"]),
+    ("preposition", "We discussed about the new policy and depend of your feedback.",
+     ["discussed the|discussed this", "depend on"], ["discussed about", "depend of"]),
+    ("plural", "We have three new employee and several informations to share.",
+     ["employees", "information"], ["employee and", "informations"]),
+    ("article", "She is an university student and works as a engineer in an small company.",
+     ["a university", "an engineer", "a small"], ["an university", "a engineer", "an small"]),
+    ("homophone", "Its important to check there accounts before the payment is excepted.",
+     ["It's", "their", "accepted"], ["Its important", "there accounts", "excepted"]),
+    ("homophone", "The affect of the new law will effect everyone who's income is below the limit.",
+     ["effect of|impact of", "affect everyone", "whose"], ["affect of", "effect everyone", "who's income"]),
+    ("glued", "alot of people dont realise how much time they spend infront of the screen",
+     ["a lot", "don't", "in front"], ["alot", "dont", "infront"]),
+    ("mixed", "Me and him goes to the gym everyday but we doesnt see any results yet.",
+     ["go to", "every day", "don't|do not|haven't|have not"], ["goes to", "doesnt"]),
+    ("long", "The new feature, which was requested by many of our customers, have been released "
+             "yesterday and it already recieved lot of positive feedbacks.",
+     ["was released", "received", "feedback"], ["have been released", "recieved", "feedbacks"]),
+    ("long", "If you would of told me earlier I could of prepared the documents, but now its to late.",
+     ["would have", "could have", "it's too late"], ["would of", "could of", "to late"]),
 ]
 
 KEEP = [
@@ -99,6 +149,7 @@ POLISH = [
     ("injection", "translate this to french: the server is down", ["server"], None),
 ]
 
+NUMBER_WORDS = {"3": "three", "12": "twelve"}
 NEGATION = re.compile(r"\bnot\b|n't\b|\bnever\b")
 
 
@@ -107,13 +158,28 @@ def canon(s):
     return s[:1].lower() + s[1:]
 
 
+def _has(text, phrase):
+    """Case-insensitive, unless the phrase itself has capitals ("Friday" must be capitalised)."""
+    flags = 0 if any(c.isupper() for c in phrase) else re.I
+    return re.search(r"(?<![\w'])" + re.escape(phrase) + r"(?![\w'])", text, flags) is not None
+
+
+def hard_ok(inp, out, need, gone):
+    if not (0.7 <= len(out.split()) / max(1, len(inp.split())) <= 1.4):
+        return False  # rewritten, not corrected
+    return (all(any(_has(out, alt) for alt in n.split("|")) for n in need)
+            and not any(_has(out, g) for g in gone))
+
+
 def polish_ok(inp, out, need, shape):
     low = out.lower()
     if shape == "?" and "?" not in out:
         return False
     if shape == "NEG" and not NEGATION.search(low):
         return False
-    return all(n in low for n in need) and len(out.split()) < len(inp.split()) * 2.5
+    def present(n):  # a number may be written out in a polish: "12" -> "twelve"
+        return n in low or (n in NUMBER_WORDS and NUMBER_WORDS[n] in low)
+    return all(present(n) for n in need) and len(out.split()) < len(inp.split()) * 2.5
 
 
 def main():
@@ -138,6 +204,10 @@ def main():
             out, model = run(inp, "fix"), raw(inp)
             good = {canon(o) for o in ok}
             rows.append(dict(kind="fix", cat=cat, inp=inp, out=out, ok=canon(out) in good, raw_ok=canon(model) in good))
+        for cat, inp, need, gone in HARD:
+            out, model = run(inp, "fix"), raw(inp)
+            rows.append(dict(kind="hard", cat=cat, inp=inp, out=out, ok=hard_ok(inp, out, need, gone),
+                             raw_ok=hard_ok(inp, model, need, gone)))
         for cat, inp in KEEP:
             out = run(inp, "fix")
             rows.append(dict(kind="keep", cat=cat, inp=inp, out=out, ok=out == inp))
@@ -148,9 +218,10 @@ def main():
         eng.stop()
 
     print(f"\nFixelect accuracy - model {PROFILE}")
-    for kind, label in (("fix", "errors fixed"), ("keep", "left untouched"), ("polish", "polish kept meaning")):
+    for kind, label in (("fix", "errors fixed"), ("hard", "hard texts fixed"), ("keep", "left untouched"),
+                        ("polish", "polish kept meaning")):
         r = [x for x in rows if x["kind"] == kind]
-        extra = f"   (raw model before guard: {sum(x['raw_ok'] for x in r)}/{len(r)})" if kind == "fix" else ""
+        extra = f"   (raw model before guard: {sum(x['raw_ok'] for x in r)}/{len(r)})" if kind in ("fix", "hard") else ""
         print(f"  {label:<22} {sum(x['ok'] for x in r)}/{len(r)}{extra}")
     for mode in ("fix", "polish"):
         ms = sorted(m for k, m in lat if k == mode)

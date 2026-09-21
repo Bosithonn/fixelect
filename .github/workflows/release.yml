@@ -231,7 +231,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-26, macos-15]
+        # the recommended model on the newest macOS, the small one on the older
+        include:
+          - os: macos-26
+            profile: gemma4-e2b
+            file: gemma-4-E2B-it-Q4_K_M.gguf
+            url: https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf
+            sha: 740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8
+          - os: macos-15
+            profile: "1.5b"
+            file: qwen2.5-1.5b-instruct-q4_k_m.gguf
+            url: https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
+            sha: 6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -272,14 +283,13 @@ jobs:
           sudo pkill -x tccd || true; pkill -x tccd || true
           sudo sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "SELECT service, client, auth_value FROM access WHERE client LIKE '%ixelect%';"
 
-      - name: Download a small model and skip onboarding
+      - name: Download the model (${{ matrix.profile }}) and skip onboarding
         run: |
           DIR="$HOME/Library/Application Support/Fixelect"
           mkdir -p "$DIR/models"
-          curl -fsSL -o "$DIR/models/qwen2.5-1.5b-instruct-q4_k_m.gguf" \
-            https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf
-          echo "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e  $DIR/models/qwen2.5-1.5b-instruct-q4_k_m.gguf" | shasum -a 256 -c
-          echo '{"model_profile": "1.5b", "onboarding_done": true, "sound_enabled": false}' > "$DIR/config.json"
+          curl -fsSL --retry 5 --retry-all-errors -o "$DIR/models/${{ matrix.file }}" "${{ matrix.url }}"
+          echo "${{ matrix.sha }}  $DIR/models/${{ matrix.file }}" | shasum -a 256 -c
+          echo '{"model_profile": "${{ matrix.profile }}", "onboarding_done": true, "sound_enabled": false}' > "$DIR/config.json"
 
       - name: Start Fixelect
         run: |
@@ -330,17 +340,17 @@ jobs:
           name: Fixelect-Windows-Installer
           path: installer
 
-      - name: Download a small model and skip onboarding
+      - name: Download the recommended model (Gemma 4 E2B) and skip onboarding
         shell: pwsh
         run: |
           $dir = Join-Path $env:LOCALAPPDATA "Fixelect"
           New-Item -ItemType Directory -Force (Join-Path $dir "models") | Out-Null
-          $model = Join-Path $dir "models\qwen2.5-1.5b-instruct-q4_k_m.gguf"
+          $model = Join-Path $dir "models\gemma-4-E2B-it-Q4_K_M.gguf"
           $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" -OutFile $model
+          Invoke-WebRequest "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf" -OutFile $model -MaximumRetryCount 5 -RetryIntervalSec 5
           $hash = (Get-FileHash $model -Algorithm SHA256).Hash.ToLower()
-          if ($hash -ne "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e") { throw "model checksum mismatch: $hash" }
-          '{"model_profile": "1.5b", "onboarding_done": true, "sound_enabled": false, "check_updates": false, "menu_hotkey": "Ctrl+Alt+M"}' |
+          if ($hash -ne "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8") { throw "model checksum mismatch: $hash" }
+          '{"model_profile": "gemma4-e2b", "onboarding_done": true, "sound_enabled": false, "check_updates": false, "menu_hotkey": "Ctrl+Alt+M"}' |
             Set-Content -Encoding utf8 (Join-Path $dir "config.json")
 
       - name: Install Fixelect like a user

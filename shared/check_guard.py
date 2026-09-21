@@ -481,6 +481,7 @@ EXPANSIONS = {
     "msg": "message", "ppl": "people", "smth": "something", "tho": "though",
     "wht": "what", "wat": "what", "rn": "right now", "btw": "by the way",
     "hv": "have", "rly": "really",
+    "tonite": "tonight", "nite": "night",
     # Contractions. "id", "ill" and "lets" are deliberately absent: they are real
     # words ("user id", "feeling ill", "she lets me") and expanding them
     # unconditionally inserted errors into correct text.
@@ -593,6 +594,11 @@ def expand(text):
         (r"\bTobehonst\b", "To be honest"),
         (r"\bto behonst\b", "to be honest"),
         (r"\bTo behonst\b", "To be honest"),
+        # text-speak questions: "r u coming?" / "u r late"
+        (r"\br u\b", "are you"),
+        (r"\bR u\b", "Are you"),
+        (r"\bu r\b", "you are"),
+        (r"\bU r\b", "You are"),
         (r"\bshould of\b", "should have"),
         (r"\bShould of\b", "Should have"),
         (r"\bcould of\b", "could have"),
@@ -707,13 +713,55 @@ COMMON_GRAMMAR_PAIRS = {
     ("leaved", "left"), ("left", "leaved"),
     ("putted", "put"), ("put", "putted"),
     ("tiered", "tired"), ("tired", "tiered"),
+    # One way only: the left side is almost always a slip for the right.
+    ("excepted", "accepted"), ("loosing", "losing"),
 }
+
+# Word pairs learners get wrong, fixed only right after the word that needs them:
+# (previous word, wrong word) -> right word. "depend of" -> "depend on".
+COLLOCATIONS = {}
+for _heads, _wrong, _right in (
+        ("depend depends depended depending dependent dependant rely relies relied relying", "of", "on"),
+        ("interested", "for", "in"), ("interested", "on", "in"),
+        ("married", "with", "to"), ("afraid", "from", "of"), ("consist consists consisted", "from", "of"),
+        ("responsible", "of", "for"), ("capable", "to", "of")):
+    for _head in _heads.split():
+        COLLOCATIONS[(_head, _wrong)] = _right
+
+# Words that are wrong right after these verbs and can simply go: "discuss about the plan".
+REDUNDANT_AFTER = {("discuss", "about"), ("discussed", "about"), ("discusses", "about"),
+                   ("discussing", "about"), ("mention", "about"), ("mentioned", "about"),
+                   ("emphasize", "on"), ("emphasized", "on"), ("emphasise", "on"), ("emphasised", "on")}
+# ...and words that are wrong right BEFORE these: "I am agree" -> "I agree".
+REDUNDANT_BEFORE = {(be, verb) for be in ("am", "is", "are") for verb in ("agree", "disagree")}
+
+# A missing helper verb may be added, but only in front of a verb form that
+# needs one ("I going", "she been working", "the train already left"), so a
+# terse note like "Report attached" or "Meeting tomorrow" is never touched.
+HELPER_VERBS = {"am", "is", "are", "was", "were", "have", "has", "had", "been", "be"}
+_NEEDS_HELPER = {"already", "just", "been", "never"}
+
+
+def collocation_fix(prev, mine_word, their_word):
+    right = COLLOCATIONS.get((_core(prev or ""), _core(mine_word)))
+    return right is not None and _core(their_word) == right and _punct_count(their_word) >= _punct_count(mine_word)
+
+
+def helper_insert_ok(word, next_word):
+    if _core(word) not in HELPER_VERBS or word != word.lower() or _punct_count(word):
+        return False
+    nxt = _core(next_word or "")
+    return (nxt.endswith("ing") and len(nxt) > 4) or nxt in _NEEDS_HELPER
 
 
 def is_grammar_swap(mine_str, theirs_str):
-    m = mine_str.lower().strip()
-    t = theirs_str.lower().strip()
-    return (m, t) in COMMON_GRAMMAR_PAIRS
+    """A known confusion (your -> you're), also with punctuation around it ("excepted." -> "accepted.")."""
+    m, t = _core(mine_str.strip()), _core(theirs_str.strip())
+    if (m, t) not in COMMON_GRAMMAR_PAIRS:
+        return False
+    # the punctuation around the word must survive: "loose." -> "lose" is not the same fix
+    strip = lambda w: w.lower().strip().replace(_core(w.strip()), "", 1)  # noqa: E731
+    return strip(mine_str) == strip(theirs_str) or mine_str.strip().lower() == m
 
 
 # Agreement groups: swapping inside one group fixes agreement without changing
@@ -850,6 +898,18 @@ def acceptable_foreign(ours, given, short_words=True, lang=None):
     return short_words and len(a) <= 4 and distance(ours, given) <= 1
 
 
+def is_compound_jargon(word):
+    """Two real words glued together on purpose: "crashlooping", "healthcheck".
+    Not in the dictionary, yet not a typo either, so the model may
+    split or hyphenate it but never swap it for a different word."""
+    w = normalise(word)
+    if len(w) < 10 or w in DICTIONARY or not w.isalpha():
+        return False
+    # both halves 5+ letters: the word list has short oddities ("ting", "ponce") that
+    # would otherwise make typos like "someting" or "responce" look like compounds
+    return any(w[:i] in DICTIONARY and w[i:] in DICTIONARY for i in range(5, len(w) - 4))
+
+
 def acceptable(mine, theirs, short_words=True, prev=None, lang="en"):
     """Is turning `mine` into `theirs` a correction rather than a rewrite?
 
@@ -863,6 +923,10 @@ def acceptable(mine, theirs, short_words=True, prev=None, lang="en"):
     ours, given = " ".join(mine), " ".join(theirs)
     if lang != "en":
         return acceptable_foreign(ours, given, short_words, lang)
+
+    if (len(mine) == 1 and len(theirs) == 1 and is_compound_jargon(mine[0])
+            and normalise(mine[0]) != normalise(theirs[0])):
+        return False
 
     # Recognized English homophone/grammar confusion (e.g. your -> you're, too -> to)
     if is_grammar_swap(ours, given):
@@ -917,9 +981,13 @@ def salvage(mine, theirs, base, lang="en"):
             if best is None or score > best[0]:
                 best = (score, j)
 
-        if best and theirs[best[1]] != word and acceptable(
-            [word], [theirs[best[1]]], short_words=False, lang=lang
-        ):
+        given = theirs[best[1]] if best else None
+        # Pairing is loose here, so a capital is never taken away ("Meeting" matched
+        # against "The meeting is" must not become "meeting").
+        if (best and given != word and normalise(given) == normalise(word)
+                and sum(c.isupper() for c in given) < sum(c.isupper() for c in word)):
+            continue
+        if best and given != word and acceptable([word], [given], short_words=False, lang=lang):
             edits.append((base + offset, base + offset + 1, (theirs[best[1]],)))
             cursor = best[1] + 1
 
@@ -946,6 +1014,17 @@ def proposed_edits(original, rewritten, lang="en"):
                 if (del_word and del_word not in LEGIT_DOUBLES
                         and (del_word == prev_word or del_word == next_word)):
                     edits.append((i1, i2, ()))
+                elif (lang == "en" and i1 > 0 and mine[0] == _core(mine[0])
+                      and (_core(src[i1 - 1]), mine[0]) in REDUNDANT_AFTER):
+                    edits.append((i1, i2, ()))
+                elif (lang == "en" and i2 < len(src) and mine[0] == _core(mine[0])
+                      and (mine[0], _core(src[i2])) in REDUNDANT_BEFORE):
+                    edits.append((i1, i2, ()))
+            continue
+
+        if tag == "insert":
+            if lang == "en" and len(theirs) == 1 and i1 < len(src) and helper_insert_ok(theirs[0], src[i1]):
+                edits.append((i1, i1, tuple(theirs)))
             continue
 
         if tag != "replace":
@@ -969,7 +1048,7 @@ def proposed_edits(original, rewritten, lang="en"):
             # its neighbours down with it.
             for k, (a, b) in enumerate(zip(mine, theirs)):
                 prev = src[i1 + k - 1] if i1 + k > 0 else None
-                if a != b and ok([a], [b], prev=prev):
+                if a != b and (ok([a], [b], prev=prev) or (lang == "en" and collocation_fix(prev, a, b))):
                     edits.append((i1 + k, i1 + k + 1, (b,)))
         elif len(mine) == len(theirs) + 1 and len(mine) >= 2:
             # Check for duplicate word deletion combined with a word edit/punctuation
