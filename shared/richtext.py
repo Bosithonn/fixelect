@@ -57,6 +57,42 @@ def count_changes(old, new):
     return len(word_ops(old, new))
 
 
+def _short(text, limit=18):
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def change_summary(old, new, limit=3):
+    """The edits in words for the result card: 'teh → the · cant → can't · +2 more'.
+    Empty when there are no word-level edits, or when the text was rewritten so
+    much that a list of edits would say nothing (a polish, a translation)."""
+    ops = word_ops(old, new)
+
+    def reworded(op):  # not a spelling fix of one word: a phrase swapped, added or dropped
+        before, after = old[op[0]:op[1]].strip().lower(), op[2].strip().lower()
+        if " " in before or " " in after or not before or not after:
+            return True
+        return difflib.SequenceMatcher(None, before, after).ratio() < 0.5
+    if not ops or len(ops) > max(6, len(old.split()) // 2) or sum(map(reworded, ops)) >= 3:
+        return ""
+    def minor(op):  # capitals and punctuation only: list the real misspellings first
+        strip = lambda t: "".join(c for c in t.lower() if c.isalnum())  # noqa: E731
+        return strip(old[op[0]:op[1]]) == strip(op[2])
+    ops = sorted(ops, key=minor)
+    parts = []
+    for s, e, repl in ops[:limit]:
+        before, after = old[s:e].strip(), repl.strip()
+        if before and after:
+            parts.append(f"{_short(before)} → {_short(after)}")
+        elif before:
+            parts.append(f"removed “{_short(before)}”")
+        else:
+            parts.append(f"added “{_short(after)}”")
+    if len(ops) > limit:
+        parts.append(f"+{len(ops) - limit} more")
+    return "  ·  ".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # HTML
 # ---------------------------------------------------------------------------

@@ -68,20 +68,27 @@ def download_asset(info, name, dest_dir, progress=None, cancel=None):
     dest = pathlib.Path(dest_dir) / name
     part = dest.with_suffix(dest.suffix + ".part")
     digest = hashlib.sha256()
-    with _get(url, timeout=30) as resp, open(part, "wb") as out:
-        total = int(resp.headers.get("Content-Length") or 0)
-        done = 0
-        while True:
-            if cancel is not None and cancel.is_set():
-                raise RuntimeError("Update download cancelled.")
-            chunk = resp.read(256 * 1024)
-            if not chunk:
-                break
-            out.write(chunk)
-            digest.update(chunk)
-            done += len(chunk)
-            if progress:
-                progress(done, total)
+    try:
+        with _get(url, timeout=30) as resp, open(part, "wb") as out:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                if cancel is not None and cancel.is_set():
+                    raise RuntimeError("Update download cancelled.")
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                digest.update(chunk)
+                done += len(chunk)
+                if progress:
+                    progress(done, total)
+    except BaseException:
+        part.unlink(missing_ok=True)  # a half-downloaded installer must never be run
+        raise
+    if total and done < total:
+        part.unlink(missing_ok=True)
+        raise RuntimeError("The update download was interrupted. Try again.")
     if expected and digest.hexdigest() != expected:
         part.unlink(missing_ok=True)
         raise RuntimeError("The downloaded update failed its integrity check. Try again later.")

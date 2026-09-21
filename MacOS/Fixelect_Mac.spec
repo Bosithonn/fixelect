@@ -40,6 +40,8 @@ a = Analysis(
         'diagnostics',
         'version',
         'actions',
+        'history',
+        'modelfetch',
         'net',
         'truststore',
         'certifi',

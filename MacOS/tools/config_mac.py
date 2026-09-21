@@ -35,6 +35,8 @@ DEFAULT_CONFIG = {
     "polish_style": "professional",     # see check_guard.POLISH_STYLES
     "custom_instruction": "",           # the writer's own style note for Polish
     "polish_preview": True,             # show Polish results before replacing
+    "fix_without_selection": True,     # nothing selected: fix the line up to the cursor
+    "keep_history": True,              # recent fixes in Settings → History (this computer only)
     "multilingual": True,               # fix Spanish, French, German, ... too
     "hud_enabled": True,                # small on-screen status card
     "keep_formatting": True,            # paste rich text when the app copied rich text

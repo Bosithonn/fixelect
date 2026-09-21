@@ -54,6 +54,17 @@ CASES = [
     ("html entities survive", lambda: "&amp;" in _roundtrip(
         "<!--StartFragment--><p>Tom &amp; Jery</p><!--EndFragment-->", "Tom & Jery", "Tom & Jerry"), True),
     ("count changes", lambda: R.count_changes("i has a apple", "I have an apple"), 3),
+    # the result card lists what changed
+    ("summary: misspellings before capitals", lambda: R.change_summary(
+        "i cant beleive teh wether", "I can't believe the weather."),
+        "beleive → believe  ·  teh → the  ·  wether → weather.  ·  +2 more"),
+    ("summary: removed duplicate", lambda: R.change_summary("see the the cat", "see the cat"), "removed “the”"),
+    ("summary: added word", lambda: R.change_summary("I going home", "I am going home"), "added “am”"),
+    ("summary: nothing changed", lambda: R.change_summary("All good here.", "All good here."), ""),
+    ("summary: a rewrite is not a list of edits", lambda: R.change_summary(
+        "hey can u send me the report by friday", "Could you send the report over by Friday, please?"), ""),
+    ("summary: long words shortened", lambda: len(R.change_summary(
+        "supercalifragilisticexpialidociuss", "supercalifragilisticexpialidocious")) < 45, True),
     # "copy the whole line" in code editors (nothing selected)
     ("line copy: VS Code metadata", lambda: R.is_line_copy(
         b'{"version":1,"isFromEmptySelection":true,"multicursorText":null,"mode":"python"}'), True),

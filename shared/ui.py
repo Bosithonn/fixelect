@@ -460,8 +460,11 @@ class ModelPicker:
 
 HELP_ITEMS = [
     ("Nothing happened",
-     "Make sure text is highlighted first. Some fields (passwords, some games and remote desktops) block copying, "
-     "so Fixelect can't read them."),
+     "Select the text first, or put the cursor at the end of the line you typed. Some fields (passwords, some "
+     "games and remote desktops) block copying, so Fixelect can't read them."),
+    ("How do I get my original text back?",
+     "Click Undo on the card, or press Ctrl+Z (⌘Z on a Mac) in your app. Later on, open History: every change "
+     "is listed there with Copy original."),
     ("“Fixelect is off in this app”",
      "You (or the defaults) turned it off for that app. Remove the app under General → Turned off in."),
     ("It said “Looks good” but there is a mistake",
@@ -482,7 +485,7 @@ HELP_ITEMS = [
 
 
 class Dashboard(_Window):
-    TABS = ("Playground", "Shortcuts", "Writing", "Actions", "Model", "General", "Help")
+    TABS = ("Playground", "History", "Shortcuts", "Writing", "Actions", "Model", "General", "Help")
 
     def __init__(self, master, services, post, on_close=None, page=None):
         super().__init__(master, "Fixelect", 660, 700, on_close)
@@ -541,6 +544,8 @@ class Dashboard(_Window):
             page = tk.Frame(self.content, bg=BG)
             getattr(self, "_build_" + name.lower())(page)
             self.pages[name] = page
+        elif name == "History":
+            self._render_history()  # changes made since the tab was last open
         self.pages[name].pack(fill="both", expand=True)
         if name in self.tab_buttons:
             self.tab_buttons[name].set_variant("tab_on")
@@ -876,6 +881,8 @@ class Dashboard(_Window):
         self._wvars = {}
         for i, (key, title, desc) in enumerate((
             ("polish_preview", "Preview before replacing", "See the polished text first. Enter replaces, Esc cancels."),
+            ("fix_without_selection", "Fix without selecting",
+             "Nothing selected? The shortcut fixes the line you're typing, from its start to the cursor."),
             ("multilingual", "Other languages",
              f"Also fix {langs}. Uzbek (beta) needs the Gemma 4 model. English uses the most thorough checks."),
             ("keep_formatting", "Keep formatting", "Bold, links and fonts survive in Word, Outlook, Docs and Gmail."),
@@ -1090,6 +1097,78 @@ class Dashboard(_Window):
         C.update_config(custom_actions=[dict(a) for a in ACT.DEFAULT_ACTIONS])
         self._cancel_action_edit()
         self._render_actions()
+
+    # -- History ----------------------------------------------------------------------
+
+    def _build_history(self, page):
+        import history
+        cfg = C.load_config()
+        head = tk.Frame(page, bg=BG)
+        head.pack(fill="x")
+        label(head, "History", "title").pack(side="left")
+        self.history_clear = Button(head, "Clear history", self._clear_history, "ghost", height=30,
+                                    font=K.FONTS["small_b"], padx=10)
+        self.history_clear.pack(side="right")
+        self.history_note = label(head, "", "small", GREEN)
+        self.history_note.pack(side="right", padx=px(10))
+        label(page, f"Your last {history.MAX_ENTRIES} changes, so you can get the original back later. "
+                    "Kept only on this computer.", "small", TEXT_2, wrap=600).pack(fill="x", pady=(px(3), px(10)))
+        prefs = Card(page, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=2)
+        prefs.pack(fill="x", pady=(0, px(12)))
+        self._hist_var = tk.BooleanVar(master=self.win, value=bool(cfg.get("keep_history", True)))
+        _pref_row(prefs.body, self._hist_var, "Keep history", "Turn off to stop saving your changes.",
+                  self._toggle_history, first=True)
+        self.history_list = ScrollArea(page, 390)
+        self.history_list.pack(fill="both", expand=True)
+        self._render_history()
+
+    def _render_history(self):
+        import history
+        inner = self.history_list.inner
+        for child in inner.winfo_children():
+            child.destroy()
+        items = history.load(C.get_config_dir())
+        self.history_clear.set_state("normal" if items else "disabled")
+        if not items:
+            empty = "Nothing yet. Every fix, polish and quick action shows up here." \
+                if self._hist_var.get() else "History is off."
+            label(inner, empty, "body", TEXT_3).pack(fill="x", pady=px(24))
+            return
+        now = time.time()
+        for e in items:
+            card = Card(inner, fill=SURFACE, border=BORDER, radius=10, padx=14, pady=10)
+            card.pack(fill="x", pady=(0, px(8)))
+            top = tk.Frame(card.body, bg=SURFACE)
+            top.pack(fill="x")
+            meta = "  ·  ".join(p for p in (history.MODE_LABELS.get(e.get("mode"), "Changed"), e.get("app", ""),
+                                            history.when(e.get("time", now), now)) if p)
+            label(top, meta, "small_b", TEXT_2).pack(side="left")
+            for text, value in (("Copy result", e["after"]), ("Copy original", e["before"])):
+                Button(top, text, lambda v=value, t=text: self._copy_history(v, t), "ghost", height=26,
+                       font=K.FONTS["small_b"], padx=8).pack(side="right", padx=(px(4), 0))
+            for text, color in ((e["before"], TEXT_3), (e["after"], TEXT)):
+                shown = " ".join(text.split())
+                if len(shown) > 240:
+                    shown = shown[:239] + "…"
+                label(card.body, shown, "small", color, wrap=560).pack(fill="x", pady=(px(4), 0))
+
+    def _copy_history(self, value, what):
+        try:
+            self.win.clipboard_clear()
+            self.win.clipboard_append(value)
+            self.history_note.configure(text="Original copied." if what == "Copy original" else "Result copied.")
+            self.after(1600, lambda: self.history_note.configure(text=""))
+        except tk.TclError:
+            pass
+
+    def _toggle_history(self):
+        C.update_config(keep_history=bool(self._hist_var.get()))
+        self._render_history()
+
+    def _clear_history(self):
+        import history
+        history.clear(C.get_config_dir())
+        self._render_history()
 
     # -- Model ------------------------------------------------------------------------
 

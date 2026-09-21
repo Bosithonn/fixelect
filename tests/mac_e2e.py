@@ -26,7 +26,7 @@ OUT = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "e2e-shots")
 OPT, SHIFT, CMD = Quartz.kCGEventFlagMaskAlternate, Quartz.kCGEventFlagMaskShift, Quartz.kCGEventFlagMaskCommand
 CTRL = Quartz.kCGEventFlagMaskControl
 KEY_OPT, KEY_SHIFT, KEY_A, KEY_RETURN = 58, 56, 0, 36
-KEY_SPACE, KEY_4, KEY_5, KEY_7 = 49, 21, 23, 26
+KEY_SPACE, KEY_4, KEY_5, KEY_7, KEY_DOWN = 49, 21, 23, 26, 125
 TO_TRANSLATE = "Good morning, I will send you the report tomorrow before the meeting."
 TO_LIST = ("We need to buy milk, eggs and bread, then call the plumber about the kitchen sink "
            "and pay the electricity bill before Friday.")
@@ -238,17 +238,56 @@ def test_action():
         annotate("notice", "E2E bullet points", f"{len(bullets)} bullets ({took:.1f} s): " + " | ".join(bullets))
 
 
+def test_noselect():
+    """Nothing selected, cursor at the end of the line: Fixelect selects the line itself."""
+    app = open_document("fixelect-noselect", TYPOS)
+    press(KEY_DOWN, CMD)            # end of the document, no selection
+    shot("noselect-1-cursor")
+    log("Double-tapping Option with nothing selected…")
+    double_tap(OPT, KEY_OPT)
+    after, took = wait_for_change(app, TYPOS, 240, "noselect")
+    shot("noselect-2-result")
+    log(f"  before: {TYPOS}\n  after:  {after}")
+    words = (after or "").lower().replace(",", " ").split()
+    if took is None:
+        failures.append("No selection: the line was not fixed within 240 s.")
+    elif "beleive" in words or "believe" not in words:
+        failures.append(f"No selection: typos remain: {after!r}")
+    else:
+        log(f"  PASS: fixed without selecting in {took:.1f} s")
+        annotate("notice", "E2E no selection", f"{TYPOS} -> {after} ({took:.1f} s)")
+
+
+def check_history(expected):
+    """Every replacement above must be listed in History."""
+    import json
+    path = pathlib.Path.home() / "Library" / "Application Support" / "Fixelect" / "history.json"
+    try:
+        items = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        failures.append(f"history: {path} unreadable ({type(e).__name__})")
+        return
+    modes = [e.get("mode") for e in items]
+    if not failures and (len(items) < expected or "action" not in modes or "polish" not in modes):
+        failures.append(f"history: expected {expected} entries with fix, polish and action, got {modes}")
+    else:
+        log(f"  history: {len(items)} entries ({', '.join(modes)})")
+        annotate("notice", "E2E history", f"{len(items)} entries: {', '.join(modes)}")
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     shot("0-desktop")
-    for name, test in (("fix", test_fix), ("polish", test_polish), ("translate", test_translate),
-                       ("action", test_action)):
+    tests = (("fix", test_fix), ("polish", test_polish), ("translate", test_translate),
+             ("action", test_action), ("noselect", test_noselect))
+    for name, test in tests:
         try:
             test()
         except Exception as e:
             failures.append(f"{name}: {type(e).__name__}: {e}")
         subprocess.run(["osascript", "-e", 'tell application "TextEdit" to quit saving no'], capture_output=True)
         time.sleep(2)
+    check_history(len(tests))
     for f in failures:
         log("FAIL " + f)
         annotate("error", "E2E", f)

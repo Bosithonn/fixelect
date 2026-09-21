@@ -55,6 +55,7 @@ from check_guard import (  # noqa: E402
 )
 import apps_mac as apps  # noqa: E402
 import chunking  # noqa: E402
+import history  # noqa: E402
 import clipboard_mac as clip  # noqa: E402
 import languages  # noqa: E402
 import richtext  # noqa: E402
@@ -193,6 +194,7 @@ class MacApp:
         self._pending = None
         self._last_hotkey_done = 0.0
         self._undo = None
+        self._auto_line = None
         self._want_dashboard = threading.Event()
         self._stopping = False
         try:
@@ -381,10 +383,12 @@ class MacApp:
             self.hud("success", "Nothing to change", "The result is the same as your text.", timeout=2500)
             return
         undo = self._paste(result, {}, original, front, "polish")
+        self._remember("action", apps.foreground()[1], text, result)
         self.hud("polish", actions.done_title(item), "", actions=undo, timeout=5000)
 
     def _paste(self, fixed, kept, original, front, sound):
         """Replace the still-selected text with `fixed`. Returns the card's Undo action."""
+        self._auto_line = None  # the selection is being replaced; nothing to put back
         clip.set_text(fixed, transient=True, html=kept.get("html"), rtf=kept.get("rtf"))
         count = clip.change_count()
         time.sleep(0.03)
@@ -401,6 +405,17 @@ class MacApp:
         self.hud("success", f"Fixelect is on in {apps.display_name(bundle_id)}", "Use the shortcut again.", timeout=2500)
 
     def _do_hotkey(self, mode):
+        self._auto_line = None
+        try:
+            self._do_hotkey_inner(mode)
+        finally:
+            # We selected the line ourselves but didn't replace it: put the cursor back.
+            pid, self._auto_line = self._auto_line, None
+            if pid and apps.foreground()[2] == pid:
+                clip.wait_for_modifiers()
+                clip.collapse_selection()
+
+    def _do_hotkey_inner(self, mode):
         cfg = load_config()
         front, bundle_id, pid = apps.foreground()
         if apps.is_disabled(bundle_id, cfg, pid):
@@ -414,11 +429,14 @@ class MacApp:
             original = clip.snapshot()
         clip.wait_for_modifiers()
         if not clip.copy_selection():
-            self._schedule_restore(original, 0.05)
-            self.hud("info", "Select some text first",
-                     "Highlight the words you want to " + {"fix": "fix", "polish": "polish"}.get(mode, "change")
-                     + ", then use the shortcut again.", timeout=3500)
-            return
+            if cfg.get("fix_without_selection", True) and clip.select_to_line_start():
+                self._auto_line = pid
+            else:
+                self._schedule_restore(original, 0.05)
+                self.hud("info", "Select some text first",
+                         "Highlight the words you want to " + {"fix": "fix", "polish": "polish"}.get(mode, "change")
+                         + ", then use the shortcut again.", timeout=3500)
+                return
         text = clip.get_text()
         rich = clip.get_rich() if cfg.get("keep_formatting", True) else {}
         if not text or not text.strip():
@@ -482,6 +500,7 @@ class MacApp:
 
         kept = clip.rewrite_rich(rich, text, fixed) if rich else {}
         undo = self._paste(fixed, kept, original, front, mode)
+        self._remember(mode, bundle_id, text, fixed)
         detail = "Formatting kept." if kept else ""
         if mode == "polish" and not info.get("polish_fallback"):
             self.hud("polish", "Polished", detail, actions=undo, timeout=5000)
@@ -489,7 +508,14 @@ class MacApp:
             n = richtext.count_changes(text, fixed)
             if info.get("polish_fallback"):
                 detail = "Polishing would have changed your meaning, so only typos were fixed."
-            self.hud("success", f"Fixed {plural(n, 'word')}" if n else "Fixed", detail, actions=undo, timeout=5000)
+            else:
+                detail = richtext.change_summary(text, fixed, limit=2) or detail  # one line on the Mac card
+            self.hud("success", f"Fixed {plural(n, 'word')}" if n else "Fixed", detail, actions=undo, timeout=6000)
+
+    def _remember(self, mode, bundle_id, before, after):
+        """Keep the change in History (Settings), only on this computer."""
+        if load_config().get("keep_history", True):
+            history.add(get_config_dir(), mode, apps.display_name(bundle_id), before, after)
 
     def _compute(self, text, mode, cfg, style=None, variant=0, action=None):
         import actions

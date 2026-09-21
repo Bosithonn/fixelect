@@ -9,11 +9,12 @@ import os
 import pathlib
 import shutil
 import subprocess
-import time
 import urllib.error
 import urllib.request
 
+import modelfetch
 import net
+from version import APP_VERSION
 from config_mac import get_models_dir, get_config_dir
 
 MODELS = {
@@ -165,93 +166,19 @@ def resolve_model(profile: str = "3b") -> pathlib.Path | None:
     return None
 
 
-class DownloadCancelled(Exception):
-    pass
-
-
-def _friendly_network_error(e):
-    text = str(getattr(e, "reason", e))
-    if "nodename" in text or "Name or service" in text or "getaddrinfo" in text:
-        return "No internet connection. Check your network and try again."
-    if "timed out" in text:
-        return "The download server stopped responding. Try again."
-    if isinstance(e, urllib.error.HTTPError):
-        return f"Download server returned HTTP {e.code}. Try again later."
-    return f"Download failed: {text}"
+DownloadCancelled = modelfetch.DownloadCancelled
 
 
 def download_model(profile: str = "3b", progress_callback=None, cancel_event=None) -> pathlib.Path:
-    """Download a model with resume support. The file is only moved into place
-    once every byte has arrived - a truncated model used to be kept forever."""
+    """Download a model once, with resume and a checksum check (see shared/modelfetch.py)."""
     spec = MODELS.get(profile)
     if not spec:
         raise ValueError(f"Unknown model profile: {profile}")
-    models_dir = get_models_dir()
-    final_path = models_dir / spec["filename"]
-    part_path = models_dir / f"{spec['filename']}.part"
-
     existing = resolve_model(profile)
     if existing:
         return existing
-
-    free = shutil.disk_usage(models_dir).free
-    if free < spec["size_bytes"] + 200 * 1024 * 1024:
-        raise OSError(f"Not enough disk space: {spec['badge_size']} needed, {free / 1024 ** 3:.1f} GB free.")
-
-    start_byte = part_path.stat().st_size if part_path.is_file() else 0
-    headers = {"User-Agent": "Fixelect-macOS/1.0"}
-    if start_byte:
-        headers["Range"] = f"bytes={start_byte}-"
-    try:
-        response = net.urlopen(urllib.request.Request(spec["url"], headers=headers), timeout=30)
-    except urllib.error.HTTPError as e:
-        if e.code == 416 and start_byte:
-            part_path.unlink(missing_ok=True)
-            return download_model(profile, progress_callback, cancel_event)
-        raise RuntimeError(_friendly_network_error(e)) from e
-    except Exception as e:
-        raise RuntimeError(_friendly_network_error(e)) from e
-
-    with response:
-        if start_byte and response.status != 206:
-            start_byte = 0
-        length = response.headers.get("Content-Length")
-        total = (int(length) + start_byte) if length else spec["size_bytes"]
-        digest = hashlib.sha256()
-        if start_byte:
-            with open(part_path, "rb") as f:
-                for block in iter(lambda: f.read(4 * 1024 * 1024), b""):
-                    digest.update(block)
-        downloaded, t0, last = start_byte, time.time(), 0.0
-        try:
-            with open(part_path, "ab" if start_byte else "wb") as f:
-                while True:
-                    if cancel_event is not None and cancel_event.is_set():
-                        raise DownloadCancelled("Download cancelled.")
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    digest.update(chunk)
-                    downloaded += len(chunk)
-                    now = time.time()
-                    if progress_callback and now - last >= 0.1:
-                        last = now
-                        progress_callback(downloaded, total, (downloaded - start_byte) / max(1e-6, now - t0))
-        except DownloadCancelled:
-            raise
-        except Exception as e:
-            raise RuntimeError(_friendly_network_error(e) + " Progress was saved; retry to resume.") from e
-
-    if length and downloaded < total:
-        raise RuntimeError("Download was interrupted. Retry to resume where it stopped.")
-    if spec.get("sha256") and digest.hexdigest() != spec["sha256"]:
-        part_path.unlink(missing_ok=True)
-        raise RuntimeError("The download was corrupted (checksum mismatch). Please try again.")
-    os.replace(part_path, final_path)
-    if progress_callback:
-        progress_callback(total, total, 0)
-    return final_path
+    return modelfetch.fetch(spec, get_models_dir(), progress_callback, cancel_event,
+                            user_agent=f"Fixelect-macOS/{APP_VERSION}")
 
 
 def get_bin_dir() -> pathlib.Path:

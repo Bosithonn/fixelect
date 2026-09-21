@@ -50,6 +50,8 @@ hidden_imports = [
     'diagnostics',
     'version',
     'actions',
+    'history',
+    'modelfetch',
     'net',
     'truststore',
     'certifi',

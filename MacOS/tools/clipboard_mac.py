@@ -255,6 +255,38 @@ def paste() -> None:
     simulate_cmd_key("v")
 
 
+_KEY_LEFT, _KEY_RIGHT = 123, 124
+
+
+def _post_key(code: int, flags: int = 0) -> bool:
+    if not _has_quartz:
+        return False
+    try:
+        src = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateCombinedSessionState)
+        for down in (True, False):
+            e = Quartz.CGEventCreateKeyboardEvent(src, code, down)
+            Quartz.CGEventSetFlags(e, flags)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
+            time.sleep(0.012)
+        return True
+    except Exception:
+        return False
+
+
+def select_to_line_start() -> bool:
+    """Nothing was selected: select from the cursor back to the start of its line
+    (⌘⇧←, what the writer just typed) and copy that. False if the line is empty."""
+    if not _has_quartz or not _post_key(_KEY_LEFT, Quartz.kCGEventFlagMaskCommand | Quartz.kCGEventFlagMaskShift):
+        return False
+    time.sleep(0.04)
+    return copy_selection()
+
+
+def collapse_selection() -> None:
+    """→ : drop the selection and leave the cursor where the writer had it."""
+    _post_key(_KEY_RIGHT)
+
+
 # Backwards-compatible helpers used by older callers.
 def get_clipboard() -> str:
     return get_text() or ""

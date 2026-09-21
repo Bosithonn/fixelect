@@ -3,15 +3,11 @@ Model manager and downloader for Fixelect.
 Resolves, discovers, and downloads GGUF models into %LOCALAPPDATA%\\Fixelect\\models\\.
 """
 
-import hashlib
 import os
 import pathlib
-import shutil
-import time
-import urllib.error
-import urllib.request
 
-import net
+import modelfetch
+from version import APP_VERSION
 
 MODELS = {
     "3b": {
@@ -93,19 +89,6 @@ MODELS = {
         "desc": "Meta's edge model with superb conversational clarity and natural idiom flow.",
         "ollama_blob": "",
     },
-    "deepseek-1.5b": {
-        "name": "DeepSeek R1 Distill 1.5B — Precision & Logic",
-        "short_name": "DeepSeek R1 1.5B",
-        "filename": "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
-        "sha256": "1741e5b2d062b07acf048bf0d2c514dadf2a48f94e2b4aa0cfe069af3838ee2f",
-        "url": "https://huggingface.co/bartowski/DeepSeek-R1-Distill-Qwen-1.5B-GGUF/resolve/main/DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf",
-        "size_bytes": 1117320800,
-        "approx_mb": 1065,
-        "badge_size": "1.0 GB",
-        "badge_rec": "REASONING & LOGIC",
-        "desc": "Fine-tuned reasoning for logical clarity, precision phrasing, and technical writing.",
-        "ollama_blob": "",
-    },
 }
 
 
@@ -174,117 +157,17 @@ def resolve_model(profile="3b"):
     return None
 
 
-class DownloadCancelled(Exception):
-    pass
-
-
-def _friendly_network_error(e):
-    text = str(getattr(e, "reason", e))
-    if "getaddrinfo" in text or "Name or service" in text or "nodename" in text:
-        return "No internet connection. Check your network and try again."
-    if "timed out" in text:
-        return "The download server stopped responding. Try again."
-    if isinstance(e, urllib.error.HTTPError):
-        return f"Download server returned HTTP {e.code}. Try again later."
-    return f"Download failed: {text}"
+DownloadCancelled = modelfetch.DownloadCancelled
 
 
 def download_model(profile="3b", progress_callback=None, cancel_event=None):
-    """
-    Download the GGUF model from Hugging Face with progress, resume and verification.
-
-    The file is only moved into place once every byte announced by the server
-    has arrived - an interrupted download used to be renamed to the final name,
-    after which llama-server failed on the truncated file forever.
-    """
+    """Download a model once, with resume and a checksum check (see shared/modelfetch.py)."""
     spec = MODELS.get(profile) or MODELS["3b"]
-    models_dir = get_models_dir()
-    target_path = models_dir / spec["filename"]
-    part_path = models_dir / f"{spec['filename']}.part"
-
     existing = resolve_model(profile)
     if existing:
         return existing
-
-    try:
-        free = shutil.disk_usage(models_dir).free
-        needed = spec["size_bytes"] - (part_path.stat().st_size if part_path.exists() else 0)
-        if free < needed + 200 * 1024 * 1024:
-            raise OSError(
-                f"Not enough disk space: {spec['badge_size']} needed, "
-                f"{free / (1024 ** 3):.1f} GB free on this drive."
-            )
-    except OSError as e:
-        if "disk space" in str(e):
-            raise
-
-    initial_bytes = part_path.stat().st_size if part_path.exists() else 0
-    headers = {"User-Agent": "Fixelect-Desktop/1.0"}
-    if initial_bytes:
-        headers["Range"] = f"bytes={initial_bytes}-"
-
-    req = urllib.request.Request(spec["url"], headers=headers)
-    chunk_size = 1024 * 1024
-    try:
-        response = net.urlopen(req, timeout=30)
-    except urllib.error.HTTPError as e:
-        if e.code == 416 and initial_bytes:  # stale/complete partial: start over
-            part_path.unlink(missing_ok=True)
-            return download_model(profile, progress_callback, cancel_event)
-        raise RuntimeError(_friendly_network_error(e)) from e
-    except Exception as e:
-        raise RuntimeError(_friendly_network_error(e)) from e
-
-    with response:
-        if initial_bytes and response.status != 206:
-            initial_bytes = 0  # server ignored Range: appending would corrupt the file
-        length = response.headers.get("Content-Length")
-        total_bytes = (int(length) + initial_bytes) if length else spec["size_bytes"]
-
-        # Hash while downloading (and the resumed part first), so the checksum
-        # costs no extra pass over a multi-GB file.
-        digest = hashlib.sha256()
-        if initial_bytes:
-            with open(part_path, "rb") as f:
-                for block in iter(lambda: f.read(4 * 1024 * 1024), b""):
-                    digest.update(block)
-
-        downloaded = initial_bytes
-        started, last_cb = time.time(), 0.0
-        try:
-            with open(part_path, "ab" if initial_bytes else "wb") as out_f:
-                while True:
-                    if cancel_event is not None and cancel_event.is_set():
-                        raise DownloadCancelled("Download cancelled.")
-                    chunk = response.read(chunk_size)
-                    if not chunk:
-                        break
-                    out_f.write(chunk)
-                    digest.update(chunk)
-                    downloaded += len(chunk)
-                    now = time.time()
-                    if progress_callback and (now - last_cb >= 0.1):
-                        last_cb = now
-                        elapsed = max(1e-6, now - started)
-                        progress_callback(downloaded, total_bytes, (downloaded - initial_bytes) / elapsed)
-        except DownloadCancelled:
-            raise
-        except Exception as e:
-            raise RuntimeError(_friendly_network_error(e) + " Progress was saved; retry to resume.") from e
-
-    if length and downloaded < total_bytes:
-        raise RuntimeError("Download was interrupted. Retry to resume where it stopped.")
-    if downloaded < 100 * 1024 * 1024:
-        part_path.unlink(missing_ok=True)
-        raise RuntimeError("The downloaded file is invalid. Please try again.")
-    if spec.get("sha256") and digest.hexdigest() != spec["sha256"]:
-        part_path.unlink(missing_ok=True)
-        raise RuntimeError("The download was corrupted (checksum mismatch). Please try again.")
-
-    os.replace(part_path, target_path)
-    if progress_callback:
-        progress_callback(total_bytes, total_bytes, 0)
-    return target_path
+    return modelfetch.fetch(spec, get_models_dir(), progress_callback, cancel_event,
+                            user_agent=f"Fixelect-Windows/{APP_VERSION}")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,10 @@ try:
 except Exception:  # pragma: no cover
     DEFAULT_DISABLED = []
 
+# Models no longer offered, and what a saved choice of them becomes. DeepSeek R1
+# is a reasoning model: it thinks out loud first, which made fixes slow.
+RETIRED_MODELS = {"deepseek-1.5b": "1.5b"}
+
 DEFAULT_CONFIG = {
     "model_profile": "3b",
     "sound_enabled": True,
@@ -29,6 +33,8 @@ DEFAULT_CONFIG = {
     "polish_style": "professional",     # see check_guard.POLISH_STYLES
     "custom_instruction": "",           # the writer's own style note for Polish
     "polish_preview": True,             # show Polish results before replacing
+    "fix_without_selection": True,     # nothing selected: fix the line up to the cursor
+    "keep_history": True,              # recent fixes in Settings → History (this computer only)
     "multilingual": True,               # fix Spanish, French, German, ... too
     "hud_enabled": True,                # small on-screen status card
     "keep_formatting": True,            # paste rich text when the app copied rich text
@@ -222,6 +228,8 @@ def load_config():
                     cfg.update(data)
         except Exception:
             pass
+    if cfg.get("model_profile") in RETIRED_MODELS:
+        cfg["model_profile"] = RETIRED_MODELS[cfg["model_profile"]]
     return cfg
 
 

@@ -92,6 +92,7 @@ from downloader import resolve_model  # noqa: E402
 from hotkey_win import WinHotkeyListener  # noqa: E402
 import apps_win as apps  # noqa: E402
 import chunking  # noqa: E402
+import history  # noqa: E402
 import clipboard_win as clip  # noqa: E402
 import languages  # noqa: E402
 import richtext  # noqa: E402
@@ -119,8 +120,9 @@ kernel32 = ctypes.windll.kernel32
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x0008, 0x4000
 VK_CONTROL, VK_MENU, VK_SHIFT, VK_LWIN, VK_RWIN = 0x11, 0x12, 0x10, 0x5B, 0x5C
 VK_C, VK_V, VK_Z, VK_F, VK_P, VK_Q, VK_SPACE, VK_ESCAPE = 0x43, 0x56, 0x5A, 0x46, 0x50, 0x51, 0x20, 0x1B
+VK_HOME, VK_RIGHT = 0x24, 0x27
 VK_MASK = 0xE8  # unassigned key: breaks "lone Win/Alt release" menu activation
-KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP = 0x0001, 0x0002
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
 WM_APP_RELOAD_HOTKEYS = 0x8000 + 10
@@ -288,6 +290,16 @@ def key_up(vk):
     user32.keybd_event(vk, _scan(vk), KEYEVENTF_KEYUP, 0)
 
 
+def tap_nav(vk, shift=False):
+    """Home / arrow keys. Extended, or apps with Num Lock on read them as the keypad's 7 / 6."""
+    if shift:
+        key_down(VK_SHIFT)
+    user32.keybd_event(vk, _scan(vk), KEYEVENTF_EXTENDEDKEY, 0)
+    user32.keybd_event(vk, _scan(vk), KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+    if shift:
+        key_up(VK_SHIFT)
+
+
 def _is_down(vk):
     return bool(user32.GetAsyncKeyState(vk) & 0x8000)
 
@@ -331,6 +343,14 @@ def copy_selection():
             time.sleep(0.025)  # let the source app finish writing every format
             return not clip.copied_from_empty_selection()
     return False
+
+
+def select_to_line_start():
+    """Nothing was selected: select from the cursor back to the start of its line
+    (what the writer just typed) and copy that. False if the line is empty."""
+    tap_nav(VK_HOME, shift=True)
+    time.sleep(0.04)
+    return copy_selection()
 
 
 def wait_for_foreground(hwnd, timeout=0.8):
@@ -415,6 +435,7 @@ class FixelectApp:
         self._pending_restore = None
         self._last_hotkey_done = 0.0
         self._undo = None
+        self._auto_line = None
         self.update_info = None
         self.tray = None
         self.ui = None
@@ -666,6 +687,17 @@ class FixelectApp:
         self.hud("success", f"Fixelect is on in {apps.display_name(exe)}", "Use the shortcut again.", timeout=2500)
 
     def _do_hotkey(self, mode):
+        self._auto_line = None
+        try:
+            self._do_hotkey_inner(mode)
+        finally:
+            # We selected the line ourselves but didn't replace it: put the cursor back.
+            hwnd, self._auto_line = self._auto_line, None
+            if hwnd and user32.GetForegroundWindow() == hwnd:
+                settle_modifiers()
+                tap_nav(VK_RIGHT)
+
+    def _do_hotkey_inner(self, mode):
         cfg = load_config()
         hwnd, exe, pid = apps.foreground()
         if apps.is_disabled(exe, cfg, pid):
@@ -687,11 +719,14 @@ class FixelectApp:
 
         settle_modifiers()
         if not copy_selection():
-            self._schedule_restore(original, 0.05)
-            self.hud("info", "Select some text first",
-                     "Highlight the words you want to " + {"fix": "fix", "polish": "polish"}.get(mode, "change")
-                     + ", then use the shortcut again.", timeout=3500, anchor=anchor)
-            return
+            if cfg.get("fix_without_selection", True) and select_to_line_start():
+                self._auto_line = hwnd
+            else:
+                self._schedule_restore(original, 0.05)
+                self.hud("info", "Select some text first",
+                         "Highlight the words you want to " + {"fix": "fix", "polish": "polish"}.get(mode, "change")
+                         + ", then use the shortcut again.", timeout=3500, anchor=anchor)
+                return
 
         text = clip.get_text()
         html = clip.get_html() if cfg.get("keep_formatting", True) else None
@@ -763,18 +798,26 @@ class FixelectApp:
             except Exception as e:
                 log_error(f"rich text mapping failed: {type(e).__name__}")
         undo = self._paste(fixed, new_html, original, hwnd, mode)
+        self._remember(mode, exe, text, fixed)
         if mode == "polish" and not info.get("polish_fallback"):
             self.hud("polish", "Polished", "Formatting kept." if new_html else "", actions=undo,
                      timeout=5000, anchor=anchor)
         else:
             n = richtext.count_changes(text, fixed)
             detail = "Polishing would have changed your meaning, so only typos were fixed." \
-                if info.get("polish_fallback") else ("Formatting kept." if new_html else "")
+                if info.get("polish_fallback") else (richtext.change_summary(text, fixed)
+                                                     or ("Formatting kept." if new_html else ""))
             self.hud("success", f"Fixed {plural(n, 'word')}" if n else "Fixed", detail, actions=undo,
-                     timeout=5000, anchor=anchor)
+                     timeout=6000, anchor=anchor)
+
+    def _remember(self, mode, exe, before, after):
+        """Keep the change in History (Settings), only on this computer."""
+        if load_config().get("keep_history", True):
+            history.add(get_config_dir(), mode, apps.display_name(exe), before, after)
 
     def _paste(self, fixed, new_html, original, hwnd, sound):
         """Replace the still-selected text with `fixed`. Returns the card's Undo action."""
+        self._auto_line = None  # the selection is being replaced; nothing to put back
         clip.set_text(fixed, private=True, html=new_html)
         seq_after_set = clip.sequence()
         time.sleep(0.03)
@@ -816,6 +859,7 @@ class FixelectApp:
                      timeout=2500, anchor=anchor)
             return
         undo = self._paste(result, None, original, hwnd, "polish")
+        self._remember("action", apps.foreground()[1], text, result)
         self.hud("polish", actions.done_title(item), "", actions=undo, timeout=5000, anchor=anchor)
 
     def _compute(self, text, mode, cfg, anchor, style=None, variant=0, action=None):

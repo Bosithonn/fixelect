@@ -17,19 +17,19 @@ Unlike cloud-based writing assistants that stream your keystrokes and sensitive 
 ## 2. Zero Telemetry & Keystroke Logging
 - Fixelect **does not** contain any tracking scripts, analytics SDKs, advertising beacons, or telemetry loggers.
 - Fixelect **does not** log keystrokes. It only reads text that you explicitly select and command it to process with its shortcuts (double-tap Alt/Ctrl, Option/Control on macOS, or the shortcuts you choose).
-- Fixelect does not store history of the text you fix. Once text replacement completes, the text buffer is cleared from memory.
+- **History (on by default, can be turned off).** So you can get an original back after Undo is gone, Fixelect keeps your last 30 changes (the text before and after, the app's name and the time) in `history.json` on your computer. It is never sent anywhere and is not included in "Copy diagnostics". Turn it off or clear it in Settings → History: turning it off stops saving new changes, and "Clear history" deletes the file.
 - The local log file (`logs/fixelect.log`) records only errors and events such as "model unloaded", never your text. "Copy diagnostics" in the Help tab puts your settings and that log on your clipboard, and only when you click it; your custom style note and protected words are not included.
 
 ## 3. Clipboard & Selection Handling
 - When you invoke a shortcut, Fixelect briefly uses the system clipboard to read your highlighted text (plain and, to keep formatting, its rich HTML/RTF version) and pastes the corrected version back. Your previous clipboard contents are restored afterwards.
 - Fixelect's temporary clipboard entries are marked so Windows clipboard history, cloud clipboard and macOS clipboard managers skip them.
-- Fixelect does not write your text to persistent files on disk.
+- Apart from History (above), Fixelect does not write your text to files on disk.
 
 ## 4. Local Files & Storage
-Fixelect stores only your non-sensitive application preferences locally on your PC under:
-%LOCALAPPDATA%\Fixelect\
+Fixelect keeps its files on your computer, in `%LOCALAPPDATA%\Fixelect\` on Windows and `~/Library/Application Support/Fixelect/` on a Mac:
 - config.json: your preferences (model, shortcuts, polish style, the optional style note you write, apps Fixelect is turned off in, update and memory settings).
 - words.txt: the protected words you add.
+- history.json: your recent changes, while History is on (see section 2).
 - logs/: the error log described above.
 - models/: The open-source GGUF neural network weights file downloaded directly from Hugging Face during initial setup.
 

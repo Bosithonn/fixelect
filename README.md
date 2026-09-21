@@ -57,7 +57,8 @@ You can change both in Settings.
 
 - **Private.** Everything runs offline on your computer. No account, no cloud, no telemetry.
 - **Works everywhere.** Browsers, email, Slack, Word, Google Docs, Notion. Bold, links and fonts are kept.
-- **Your call.** Preview before replacing, and **Undo** in one click.
+- **Your call.** Preview before replacing, see exactly which words changed, and **Undo** in one click. **History** keeps your last 30 changes on your computer, so you can get an original back later.
+- **No selecting needed.** Just typed a line? Press the shortcut and Fixelect fixes it up to the cursor.
 - **Translate and your own actions.** One shortcut opens a menu: translate into another language, or run actions you write yourself, like "Bullet points", "Summarize" or "Reply politely". All offline.
 - **Five polish styles.** Professional, Friendly, Concise, Formal and Shorter, plus your own note like "Use British spelling".
 - **Many languages.** English, Spanish, French, German, Portuguese, Italian, Russian and Ukrainian. Uzbek (beta) with the optional Gemma 4 model.
