@@ -43,7 +43,7 @@ mkdir -p "$BUILD_DIR"
 ENGINE_TGZ="$BUILD_DIR/llama-engine-$ENGINE_TAG.tar.gz"
 if [ ! -f "$ENGINE_TGZ" ] || [ "$(shasum -a 256 "$ENGINE_TGZ" | cut -d ' ' -f 1)" != "$ENGINE_SHA256" ]; then
     echo ">> Downloading the llama.cpp engine ($ENGINE_TAG)"
-    curl -fsSL -o "$ENGINE_TGZ" "$ENGINE_URL"
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o "$ENGINE_TGZ" "$ENGINE_URL"
 fi
 if [ "$(shasum -a 256 "$ENGINE_TGZ" | cut -d ' ' -f 1)" != "$ENGINE_SHA256" ]; then
     echo "Error: engine checksum mismatch"; exit 1
@@ -113,7 +113,15 @@ or double-tap Shift to polish it.
 Help: https://github.com/Bosithonn/fixelect/issues
 EOF
 fi
-hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"
+# hdiutil fails now and then on CI machines ("Resource busy"): try a few times
+for attempt in 1 2 3 4; do
+    if hdiutil create -volname "$APP_NAME" -srcfolder "$STAGING_DIR" -ov -format UDZO "$DMG_PATH"; then
+        break
+    fi
+    if [ "$attempt" = 4 ]; then echo "Error: hdiutil could not create the DMG"; exit 1; fi
+    echo ">> hdiutil failed (attempt $attempt), retrying"
+    sleep $((attempt * 10))
+done
 rm -rf "$STAGING_DIR"
 
 # 5. Notarization
