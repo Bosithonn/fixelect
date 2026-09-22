@@ -30,6 +30,7 @@ Fixelect keeps its files on your computer, in `%LOCALAPPDATA%\Fixelect\` on Wind
 - config.json: your preferences (model, shortcuts, polish style, the optional style note you write, apps Fixelect is turned off in, update and memory settings).
 - words.txt: the protected words you add.
 - history.json: your recent changes, while History is on (see section 2).
+- speed.json: how fast the AI model answers on this computer (numbers and dates only, never your text), so Fixelect can suggest a smaller model if yours is too slow.
 - logs/: the error log described above.
 - models/: The open-source GGUF neural network weights file downloaded directly from Hugging Face during initial setup.
 

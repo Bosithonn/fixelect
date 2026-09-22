@@ -93,6 +93,7 @@ from hotkey_win import WinHotkeyListener  # noqa: E402
 import apps_win as apps  # noqa: E402
 import chunking  # noqa: E402
 import history  # noqa: E402
+import speedwatch  # noqa: E402
 import clipboard_win as clip  # noqa: E402
 import languages  # noqa: E402
 import richtext  # noqa: E402
@@ -696,6 +697,72 @@ class FixelectApp:
             if hwnd and user32.GetForegroundWindow() == hwnd:
                 settle_modifiers()
                 tap_nav(VK_RIGHT)
+            self._check_speed()
+
+    # -- too slow for this computer? (shared/speedwatch.py) -------------------------
+
+    def _check_speed(self):
+        """Record how fast the model answered; offer a smaller one when it is slow for days."""
+        try:
+            if ENGINE != "embedded":
+                return
+            timings = self._engine().take_timings()
+            if self.cancel_event.is_set():
+                return  # a cancelled job says nothing about the computer
+            profile = load_config().get("model_profile", "3b")
+            speedwatch.record(get_config_dir(), profile, timings)
+            from downloader import MODELS as DL_MODELS
+            target = speedwatch.suggestion(get_config_dir(), profile, DL_MODELS)
+            if target:
+                speedwatch.mark_asked(get_config_dir(), profile)
+                self._later(7.0, lambda: self._offer_smaller(profile, target, tries=6))
+        except Exception as e:
+            log_error(f"speed check failed: {type(e).__name__}: {e}")
+
+    def _later(self, seconds, fn):
+        t = threading.Timer(seconds, fn)
+        t.daemon = True
+        t.start()
+
+    def _offer_smaller(self, profile, target, tries):
+        """One card, after the result card has gone and while nothing else is running."""
+        if (not self.jobs.empty() or time.time() - self._last_hotkey_done < 6) and tries > 0:
+            self._later(10.0, lambda: self._offer_smaller(profile, target, tries - 1))
+            return
+        from downloader import MODELS as DL_MODELS
+        new = DL_MODELS[target]
+        size = "" if resolve_model(target) else f" ({new['badge_size']} download)"
+        log_error(f"slow model {profile}: offering {target} (typical "
+                  f"{speedwatch.typical_speed(get_config_dir(), profile)} tokens/s)")
+        self.hud("info", "Fixes are slow on this computer",
+                 f"{new['short_name']} is smaller and much faster{size}.",
+                 actions=[("Keep", lambda: speedwatch.decline(get_config_dir(), profile)),
+                          ("Switch", lambda: self._switch_to_smaller(target))], timeout=20000)
+
+    def _switch_to_smaller(self, target):
+        threading.Thread(target=self._fetch_and_switch, args=(target,), daemon=True).start()
+
+    def _fetch_and_switch(self, target):
+        from downloader import MODELS as DL_MODELS, download_model
+        name = DL_MODELS[target]["short_name"]
+        if not resolve_model(target):
+            shown = [-100]
+
+            def progress(done, total, _speed):
+                pct = int(done * 100 / total) if total else 0
+                if pct >= shown[0] + 5 or pct == 100:
+                    shown[0] = pct
+                    self.hud("working", f"Downloading {name}…", f"{pct}%  ·  keep working, this runs in the background",
+                             progress=done / total if total else None)
+            try:
+                download_model(profile=target, progress_callback=progress)
+            except Exception as e:
+                self.hud("error", "The download stopped", str(e) or type(e).__name__,
+                         actions=[("Model settings", lambda: self.open_dashboard("Model"))], timeout=8000)
+                return
+        update_config(model_profile=target)
+        self.hud("success", f"Switching to {name}", "Ready in a few seconds.", timeout=3500)
+        self.request_model_switch(target)
 
     def _do_hotkey_inner(self, mode):
         cfg = load_config()

@@ -238,8 +238,15 @@ class Hud:
             self.win.after(20, lambda b=bar, p=progress: b.set(p))
 
         if actions:
-            box = tk.Frame(row, bg=SURFACE)
-            box.pack(side="right", anchor="center", padx=(px(12), 0))
+            # Long text and several buttons don't fit on one line at WIDTH_MAX (the last
+            # button was cut off): put the buttons on their own row under the text.
+            stacked = len(actions) > 1 and len(detail) > 40
+            if stacked:
+                box = tk.Frame(self.body, bg=SURFACE)
+                box.pack(side="top", anchor="e", pady=(px(10), 0))
+            else:
+                box = tk.Frame(row, bg=SURFACE)
+                box.pack(side="right", anchor="center", padx=(px(12), 0))
             for i, (text, cb) in enumerate(actions):
                 variant = "secondary" if i == len(actions) - 1 else "ghost"
                 Button(box, text, (lambda c=cb: self._run_action(c)), variant, height=28,

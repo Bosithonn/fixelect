@@ -69,7 +69,25 @@ class MacEmbeddedEngine:
         self.hw = detect_mac_hardware()
         self.backend_label = "METAL" if self.hw.get("is_apple_silicon") else "CPU"
         self.publish = False  # set by the daemon: write runtime.json for window processes
+        self._timings, self._timings_lock = [], threading.Lock()
+        self._cold = True   # the first answer after the model loads is always slower
         atexit.register(self.stop)
+
+    def _note_timings(self, data):
+        """Keep how fast this answer came out (shared/speedwatch.py decides if that is slow)."""
+        t = data.get("timings") or {}
+        if t.get("predicted_per_second"):
+            with self._timings_lock:
+                self._timings.append({"tps": t["predicted_per_second"], "n": t.get("predicted_n", 0),
+                                      "cold": self._cold})
+                del self._timings[:-50]
+        self._cold = False
+
+    def take_timings(self):
+        """The timings noted since the last call, oldest first."""
+        with self._timings_lock:
+            out, self._timings = self._timings, []
+        return out
 
     # -- health ------------------------------------------------------------------
 
@@ -222,6 +240,7 @@ class MacEmbeddedEngine:
                         break
                     if self.is_healthy():
                         print(f"  [Engine] Model loaded in {time.time() - t0:.1f}s")
+                        self._cold = True
                         if self.publish:
                             try:
                                 get_runtime_path().write_text(json.dumps(
@@ -312,6 +331,7 @@ class MacEmbeddedEngine:
                 if res.status == 200:
                     self.last_used = time.time()
                     data = json.loads(raw.decode("utf-8"))
+                    self._note_timings(data)
                     return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
                 if res.status in (400, 413):
                     raise ValueError("The selected text is too long for the AI model.")

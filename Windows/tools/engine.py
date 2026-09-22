@@ -126,6 +126,8 @@ class EmbeddedEngine:
         self._conn_lock = threading.Lock()
         self.last_used = time.time()
         self.backend_label = ""
+        self._timings, self._timings_lock = [], threading.Lock()
+        self._cold = True   # the first answer after the model loads is always slower
 
     @property
     def base_url(self):
@@ -317,6 +319,7 @@ class EmbeddedEngine:
                 raise RuntimeError(f"exited with code {self.process.returncode}")
             if self.is_healthy():
                 print(f"  [EmbeddedEngine] Model loaded in {time.time() - start_t:.1f}s.")
+                self._cold = True
                 return
             time.sleep(0.25)
         raise TimeoutError(f"not ready within {timeout}s")
@@ -345,6 +348,22 @@ class EmbeddedEngine:
         self._owns_process = False
 
     # -- inference ---------------------------------------------------------------
+
+    def _note_timings(self, data):
+        """Keep how fast this answer came out (shared/speedwatch.py decides if that is slow)."""
+        t = data.get("timings") or {}
+        if t.get("predicted_per_second"):
+            with self._timings_lock:
+                self._timings.append({"tps": t["predicted_per_second"], "n": t.get("predicted_n", 0),
+                                      "cold": self._cold})
+                del self._timings[:-50]
+        self._cold = False
+
+    def take_timings(self):
+        """The timings noted since the last call, oldest first."""
+        with self._timings_lock:
+            out, self._timings = self._timings, []
+        return out
 
     def idle_seconds(self):
         return time.time() - self.last_used
@@ -401,6 +420,7 @@ class EmbeddedEngine:
                 if res.status == 200:
                     self.last_used = time.time()
                     data = json.loads(raw.decode("utf-8"))
+                    self._note_timings(data)
                     return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
                 if res.status in (400, 413):
                     raise ValueError("The selected text is too long for the AI model.")

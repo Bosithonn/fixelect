@@ -52,6 +52,8 @@ jobs:
         run: python tests/test_actions.py
       - name: Download, update and history tests
         run: python tests/test_downloads.py
+      - name: Speed check tests
+        run: python tests/test_speedwatch.py
       - name: Release tag matches the app version
         if: env.RELEASE_TAG != ''
         shell: bash

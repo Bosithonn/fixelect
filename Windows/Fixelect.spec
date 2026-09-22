@@ -52,6 +52,7 @@ hidden_imports = [
     'actions',
     'history',
     'modelfetch',
+    'speedwatch',
     'net',
     'truststore',
     'certifi',

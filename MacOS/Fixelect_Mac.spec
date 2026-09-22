@@ -42,6 +42,7 @@ a = Analysis(
         'actions',
         'history',
         'modelfetch',
+        'speedwatch',
         'net',
         'truststore',
         'certifi',

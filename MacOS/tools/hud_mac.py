@@ -119,7 +119,10 @@ class MacHud:
                 self._build()
             color = _COLORS.get(kind, _COLORS["info"])
             title_l = _label(title, 13, bold=True)
-            detail_l = _label(detail, 11.5, color=(0.64, 0.67, 0.72), width=self.WIDTH_MAX - 130) if detail else None
+            # Long text and several buttons overlap at WIDTH_MAX: buttons get their own row.
+            stacked = len(actions) > 1 and len(detail) > 40
+            detail_w = self.WIDTH_MAX - (70 if stacked else 130)
+            detail_l = _label(detail, 11.5, color=(0.64, 0.67, 0.72), width=detail_w) if detail else None
             glyph = _label(_GLYPH.get(kind, "!"), 14, bold=True, color=color)
 
             self._targets = []
@@ -137,9 +140,11 @@ class MacHud:
             if progress is not None:
                 text_w = max(text_w, 200)
             btn_w = sum(b.frame().size.width for b in buttons) + 6 * max(0, len(buttons) - 1)
-            w = min(self.WIDTH_MAX, max(240, 16 + 22 + 8 + text_w + (14 + btn_w if buttons else 0) + 16))
+            btn_h = max((b.frame().size.height for b in buttons), default=0)
+            side_w = 0 if stacked or not buttons else 14 + btn_w
+            w = min(self.WIDTH_MAX, max(240, 16 + 22 + 8 + max(text_w, btn_w if stacked else 0) + side_w + 16))
             h = 22 + title_l.frame().size.height + (detail_l.frame().size.height + 2 if detail_l else 0) \
-                + (10 if progress is not None else 0)
+                + (10 if progress is not None else 0) + (btn_h + 8 if stacked else 0)
 
             view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, w, h))
             view.setWantsLayer_(True)
@@ -169,7 +174,7 @@ class MacHud:
             for b in reversed(buttons):
                 bw, bh = b.frame().size.width, b.frame().size.height
                 x -= bw
-                b.setFrameOrigin_((x, (h - bh) / 2))
+                b.setFrameOrigin_((x, 10 if stacked else (h - bh) / 2))
                 view.addSubview_(b)
                 x -= 6
 
