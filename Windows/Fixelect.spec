@@ -106,6 +106,7 @@ exe = EXE(
     entitlements_file=None,
     icon=os.path.join(project_root, 'resources', 'app_icon.ico'),
     version=os.path.join(project_root, 'file_version_info.txt'),
+    manifest=os.path.join(project_root, 'fixelect.manifest'),  # declares per-monitor DPI awareness
 )
 
 coll = COLLECT(
