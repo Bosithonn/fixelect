@@ -101,6 +101,30 @@ jobs:
           $p = Start-Process -FilePath Windows/dist/Fixelect/Fixelect.exe -ArgumentList "--check-https" -Wait -PassThru
           if ($p.ExitCode -ne 0) { Write-Error "Fixelect.exe --check-https exited with $($p.ExitCode)"; exit 1 }
 
+      # The Microsoft Store package, signed with a throwaway certificate so the
+      # e2e-msix job can install it. (Store uploads are built unsigned with the
+      # real identity by Windows/build_msix.py; the Store signs them.)
+      - name: Build a test Store package (MSIX)
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=FixelectTest" `
+            -CertStoreLocation Cert:\CurrentUser\My -KeyUsage DigitalSignature -KeyExportPolicy Exportable
+          $pw = ConvertTo-SecureString -String "fixelect-test" -Force -AsPlainText
+          New-Item -ItemType Directory -Force msix-test | Out-Null
+          Export-PfxCertificate -Cert $cert -FilePath msix-test\test.pfx -Password $pw | Out-Null
+          Export-Certificate -Cert $cert -FilePath msix-test\test.cer | Out-Null
+          python Windows/build_msix.py --name Fixelect.Test --publisher "CN=FixelectTest" `
+            --publisher-display "Fixelect (CI test)" --dist Windows/dist/Fixelect `
+            --out msix-test/Fixelect.msix --sign-with msix-test\test.pfx --pfx-password fixelect-test
+          Remove-Item msix-test\test.pfx
+
+      - name: Upload test Store package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fixelect-MSIX-test
+          path: msix-test/
+          if-no-files-found: error
+
       # Code signing runs only when the repository has a certificate:
       #   WINDOWS_CERT_PFX (base64 of the .pfx) and WINDOWS_CERT_PASSWORD.
       - name: Prepare code signing
@@ -386,6 +410,97 @@ jobs:
           git add . && git -c user.name=fixelect-ci -c user.email=ci@users.noreply.github.com \
             commit -qm "Windows E2E screenshots ${{ github.sha }}"
           git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" shots:ci-shots-windows
+
+  # ---------------------------------------------------------------------------
+  # The Microsoft Store package: installed with Add-AppxPackage (as the Store
+  # does), then the same Notepad test, then the Windows App Certification Kit -
+  # the checks the Store runs on every submission.
+  # ---------------------------------------------------------------------------
+  e2e-msix:
+    name: Store package (MSIX) on Windows
+    needs: build-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test tools
+        run: pip install pillow
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Fixelect-MSIX-test
+          path: msix
+
+      - name: Install the package like the Store
+        shell: pwsh
+        run: |
+          Import-Certificate -FilePath msix\test.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople | Out-Null
+          Add-AppxPackage -Path msix\Fixelect.msix
+          $pkg = Get-AppxPackage Fixelect.Test
+          $pkg | Format-List Name, Version, PackageFamilyName, InstallLocation
+          "PFN=$($pkg.PackageFamilyName)" >> $env:GITHUB_ENV
+
+      - name: Download a small model and skip onboarding
+        shell: pwsh
+        run: |
+          # A packaged app may see its own copy of AppData: fill both the real folder
+          # and the package's private one.
+          $real = Join-Path $env:LOCALAPPDATA "Fixelect"
+          $private = Join-Path $env:LOCALAPPDATA "Packages\$env:PFN\LocalCache\Local\Fixelect"
+          $ProgressPreference = 'SilentlyContinue'
+          foreach ($dir in $real, $private) { New-Item -ItemType Directory -Force (Join-Path $dir "models") | Out-Null }
+          $model = Join-Path $real "models\qwen2.5-1.5b-instruct-q4_k_m.gguf"
+          Invoke-WebRequest "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" -OutFile $model -MaximumRetryCount 5 -RetryIntervalSec 5
+          $hash = (Get-FileHash $model -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e") { throw "model checksum mismatch: $hash" }
+          New-Item -ItemType HardLink -Path (Join-Path $private "models\qwen2.5-1.5b-instruct-q4_k_m.gguf") -Target $model | Out-Null
+          $cfg = '{"model_profile": "1.5b", "onboarding_done": true, "sound_enabled": false, "check_updates": false, "menu_hotkey": "Ctrl+Alt+M"}'
+          foreach ($dir in $real, $private) { $cfg | Set-Content -Encoding utf8 (Join-Path $dir "config.json") }
+
+      - name: Start Fixelect from the Start menu entry
+        shell: pwsh
+        run: |
+          Start-Process "shell:AppsFolder\$env:PFN!Fixelect"
+          Start-Sleep 25
+          $p = Get-Process Fixelect -ErrorAction SilentlyContinue
+          if (-not $p) { Write-Output "::error title=MSIX::Fixelect did not start from the package"; exit 1 }
+          $p | Format-Table Id, Path -AutoSize
+
+      - name: Fix, Polish, Translate and a custom action in Notepad
+        run: python tests/win_e2e.py e2e-shots
+
+      - name: Fixelect log
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem $env:LOCALAPPDATA -Recurse -Filter fixelect.log -ErrorAction SilentlyContinue |
+            ForEach-Object { "--- $($_.FullName)"; Get-Content $_.FullName -Tail 30 }
+
+      - name: Windows App Certification Kit (the Store's checks)
+        if: always()
+        shell: pwsh
+        run: |
+          $appcert = "C:\Program Files (x86)\Windows Kits\10\App Certification Kit\appcert.exe"
+          if (-not (Test-Path $appcert)) { Write-Output "::warning title=WACK::appcert.exe not on this runner"; exit 0 }
+          & $appcert reset | Out-Null
+          $report = Join-Path $env:RUNNER_TEMP "wack.xml"
+          & $appcert test -appxpackagepath (Resolve-Path msix\Fixelect.msix) -reportoutputpath $report | Out-Null
+          if (-not (Test-Path $report)) { Write-Output "::error title=WACK::no report was written"; exit 1 }
+          [xml]$x = Get-Content $report
+          $overall = $x.REPORT.OVERALL_RESULT
+          Write-Output "::notice title=WACK::overall result: $overall"
+          foreach ($t in $x.SelectNodes("//TEST")) {
+            $r = $t.RESULT.'#cdata-section'; if (-not $r) { $r = $t.RESULT }
+            if ($r -and $r -notmatch "PASS") {
+              $msg = ($t.MESSAGES.MESSAGE | ForEach-Object { $_.TEXT }) -join " | "
+              Write-Output "::warning title=WACK $($t.NAME)::$r $msg"
+            }
+          }
+          if ($overall -eq "FAIL") { exit 1 }
 
   publish-release:
     name: Publish GitHub Release

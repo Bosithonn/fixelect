@@ -8,3 +8,7 @@ pynput>=1.7.6
 truststore>=0.9.1
 certifi>=2024.2.2
 pyinstaller>=6.0.0
+winrt-runtime>=3.2.1
+winrt-Windows.ApplicationModel>=3.2.1
+winrt-Windows.ApplicationModel.Activation>=3.2.1
+winrt-Windows.Foundation>=3.2.1

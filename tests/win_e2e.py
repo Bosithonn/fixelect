@@ -204,7 +204,11 @@ def run_case(name, text, trigger, check, menu_keys=(), accept_preview=False, sec
 def check_history(expected):
     """Every replacement above must be listed in History, newest first."""
     import json
-    path = pathlib.Path(os.environ.get("LOCALAPPDATA", "")) / "Fixelect" / "history.json"
+    local = pathlib.Path(os.environ.get("LOCALAPPDATA", ""))
+    # A Store (MSIX) install writes to its own private copy of AppData.
+    found = [local / "Fixelect" / "history.json"] + sorted(
+        (local / "Packages").glob("*/LocalCache/Local/Fixelect/history.json"))
+    path = next((p for p in found if p.is_file()), found[0])
     try:
         items = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:

@@ -286,6 +286,9 @@ def is_auto_start_enabled():
     """Check if Fixelect is registered in Windows Startup registry."""
     if sys.platform != "win32":
         return False
+    import packaged
+    if packaged.is_packaged():
+        return packaged.startup_enabled()
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_REG_KEY, 0, winreg.KEY_READ) as key:
@@ -302,6 +305,9 @@ def set_auto_start(enabled=True):
     """Enable or disable Fixelect launch on Windows startup."""
     if sys.platform != "win32":
         return False
+    import packaged
+    if packaged.is_packaged():
+        return packaged.set_startup(enabled)
     try:
         import winreg
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_REG_KEY, 0, winreg.KEY_ALL_ACCESS) as key:

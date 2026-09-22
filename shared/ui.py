@@ -139,6 +139,17 @@ def _hw_line(hw):
     return "  ·  ".join(parts)
 
 
+def _store_install():
+    """Installed from the Microsoft Store: the Store handles updates."""
+    if IS_MAC:
+        return False
+    try:
+        import packaged
+        return packaged.is_packaged()
+    except Exception:
+        return False
+
+
 def _styles():
     from check_guard import POLISH_STYLES
     return POLISH_STYLES
@@ -1231,12 +1242,22 @@ class Dashboard(_Window):
 
         upd = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=6)
         upd.pack(fill="x", pady=(px(12), 0))
+        if _store_install():
+            label(upd.body, f"Fixelect {APP_VERSION}  ·  updates come from the Microsoft Store automatically.",
+                  "small", TEXT_2, wrap=540).pack(fill="x", pady=px(10))
+            self.upd_btn = None
+        else:
+            self._build_updater(upd.body)
+        self._build_general_rest(body)
+
+    def _build_updater(self, parent):
+        cfg = C.load_config()
         self._upd_var = tk.BooleanVar(master=self.win, value=bool(cfg.get("check_updates", True)))
-        _pref_row(upd.body, self._upd_var, "Check for updates",
+        _pref_row(parent, self._upd_var, "Check for updates",
                   "Once a day, asks GitHub whether a newer Fixelect exists. Nothing about you is sent.",
                   lambda: self._save_bool("check_updates", self._upd_var), first=True)
-        tk.Frame(upd.body, bg=BORDER, height=1).pack(fill="x")
-        urow = tk.Frame(upd.body, bg=SURFACE)
+        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x")
+        urow = tk.Frame(parent, bg=SURFACE)
         urow.pack(fill="x", pady=px(10))
         self.upd_btn = Button(urow, "Check now", self._update_action, "secondary", height=30,
                               font=K.FONTS["small_b"], padx=12)
@@ -1251,6 +1272,7 @@ class Dashboard(_Window):
         if info:
             self._show_update(info)
 
+    def _build_general_rest(self, body):
         words = Card(body, fill=SURFACE, border=BORDER, radius=12, padx=16, pady=14)
         words.pack(fill="x", pady=(px(12), 0))
         label(words.body, "Protected words", "body_b").pack(fill="x")

@@ -1081,7 +1081,10 @@ class FixelectApp:
                 self.jobs.put(("unload", None, time.time()))
 
     def update_watcher(self):
+        import packaged
         import updater
+        if packaged.is_packaged():
+            return  # the Microsoft Store updates Store installs
         time.sleep(25)
         while True:
             cfg = load_config()
@@ -1091,7 +1094,10 @@ class FixelectApp:
 
     def check_updates(self, quiet=False):
         """Returns (info or None, error or None)."""
+        import packaged
         import updater
+        if packaged.is_packaged():
+            return None, None
         try:
             info = updater.check()
             update_config(last_update_check=time.time())
@@ -1484,6 +1490,9 @@ def main():
 
     is_silent = _pop_flag("--silent")
     is_autostart = _pop_flag("--autostart")
+    if not is_autostart:
+        import packaged
+        is_autostart = packaged.launched_at_startup()  # Store install, started at sign-in
     _pop_flag("--no-tray")
     no_dashboard = _pop_flag("--no-dashboard")
 
