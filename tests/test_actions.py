@@ -66,11 +66,19 @@ CASES = [
      "Polish · Friendly"),
     ("menu: unknown style falls back", lambda: A.menu_items({"polish_style": "nope"})[1]["style"], "professional"),
     ("menu: styles submenu", lambda: [i["kind"] for i in A.submenu({"kind": "styles"}, {})], ["polish"] * 5),
-    ("menu: translate targets (Qwen)", lambda: [i["target"] for i in A.submenu({"kind": "translate_menu"}, {})],
-     ["en", "es", "fr", "de", "pt", "it", "ru", "uk"]),
+    ("menu: every language, with any model", lambda: [i["target"] for i in A.submenu({"kind": "translate_menu"}, {})],
+     ["en", "es", "fr", "de", "pt", "it", "ru", "uk", "uz"]),
     ("menu: Russian is key 7", lambda: A.submenu({"kind": "translate_menu"}, {})[6]["label"], "Russian"),
-    ("menu: Uzbek with Gemma", lambda: A.submenu({"kind": "translate_menu"}, {"model_profile": "gemma4-e2b"})[-1]["label"],
+    ("menu: Uzbek is key 9", lambda: A.submenu({"kind": "translate_menu"}, {"model_profile": "3b"})[8]["label"],
      "Uzbek (beta)"),
+    ("menu: Uzbek asks for Gemma 4 on other models", lambda: (
+        A.needs_model({"kind": "translate", "target": "uz"}, "3b"),
+        A.needs_model({"kind": "translate", "target": "uz"}, "gemma4-e2b"),
+        A.needs_model({"kind": "translate", "target": "it"}, "1.5b", "en"),
+        A.needs_model({"kind": "translate", "target": "en"}, None),
+        A.needs_model({"kind": "translate", "target": "ru"}, "3b", "uz"),        # from Uzbek text
+        A.needs_model({"kind": "translate", "target": "ru"}, "gemma4-e2b", "uz"),
+        A.needs_model({"kind": "custom", "prompt": "x"}, "3b")), ("uz", None, None, None, "uz", None, None)),
     ("menu: final items have no submenu", lambda: A.submenu({"kind": "fix"}, {}), None),
     # the user's actions
     ("actions: examples by default", lambda: [a["name"] for a in A.custom_actions({})], ["Bullet points", "Summarize"]),
@@ -85,6 +93,12 @@ CASES = [
      {"kind": "custom", "label": "Reply", "prompt": "Reply"}),
     # prompts
     ("prompt: names the language", lambda: "Russian" in A.translate_messages("x", "ru")[0]["content"], True),
+    ("prompt: names the source language", lambda: "from Spanish into French" in
+     A.translate_messages("hola", "fr", "es")[-1]["content"], True),
+    ("prompt: no source when unknown", lambda: " from " in A.translate_messages("x", "fr", "other")[-1]["content"],
+     False),
+    ("prompt: the request comes after the text", lambda: A.translate_messages("x", "it", "en")[-1]["content"]
+     .endswith("into Italian."), True),
     ("prompt: instruction comes after the text", lambda: A.custom_messages("x", "Reply politely")[-1]["content"].index(
         "Reply politely") > A.custom_messages("x", "Reply politely")[-1]["content"].index("</text>"), True),
     # translate
@@ -95,6 +109,49 @@ CASES = [
     ("translate: refuses an untranslated reply", lambda: raises(
         lambda: A.run(Engine(EN), EN, {"kind": "translate", "target": "ru"}), A.ActionError), True),
     ("translate: long text in chunks", _translate_long, True),
+    # Real Gemma 4 translations the old language check threw away ("Couldn't translate
+    # this into Spanish / Italian"), and real failures that must still be caught.
+    ("translate: good translations accepted", lambda: [not A.translation_ok(src, out, tgt, s) for src, out, tgt, s in (
+        (EN, "Buenos días, te enviaré el informe mañana antes de la reunión.", "es", "en"),
+        ("Meeting moved to 3pm", "Réunion déplacée à 15h", "fr", "en"),
+        ("Meeting moved to 3pm", "Riunione spostata alle 15:00", "it", "en"),
+        ("Could you please confirm whether the hotel booking in Rome includes breakfast?",
+         "Potrebbe per favore confermare se la prenotazione dell'hotel a Roma include la colazione?", "it", "en"),
+        ("I'm running late, stuck in traffic. Start without me!",
+         "Estou atrasado, preso no trânsito. Comecem sem mim!", "pt", "en"),
+        ("Happy birthday! I hope you have a wonderful day with your family.",
+         "З днем народження! Бажаю вам чудового дня з родиною.", "uk", "en"),
+        ("Привет! Я сегодня не смогу прийти на встречу, давай перенесём на завтра.",
+         "Привіт! Я сьогодні не зможу прийти на зустріч, давай перенесемо на завтра.", "uk", "ru"),
+        ("Hola, ¿puedes enviarme el contrato antes del viernes? Lo necesito para la reunión.",
+         "Olá, você pode me enviar o contrato antes de sexta-feira? Preciso dele para a reunião.", "pt", "es"),
+        (EN, "Xayrli tong, men uchrashuvdan oldin ertaga sizga hisobotni yuboraman.", "uz", "en"),
+        ("Thanks!", "Grazie!", "it", "en"),
+        ("Hola, ¿cómo estás?", "Hi, how are you?", "en", "es"))], [False] * 11),
+    ("translate: failures still refused", lambda: [A.translation_ok(src, out, tgt, s) for src, out, tgt, s in (
+        ("Hola, ¿puedes enviarme el contrato antes del viernes? Lo necesito para la reunión.",
+         "Hola, ¿puedes enviarme el contrato antes del viernes? Lo necesito para la reunión.", "it", "es"),
+        ("Salom, ertaga uchrashuvga kela olmayman, iltimos boshqa vaqtga ko'chiraylik.",
+         "Салом, эртага учрашувга кела олмайман, илтимос бошқа вақтка кўчирайлик.", "ru", "uz"),
+        (EN, "Good morning, I will send you the report tomorrow.", "es", "en"),
+        (EN, "Доброе утро, я пришлю вам отчёт завтра, это важно.", "uk", "en"),   # Russian: ё, э
+        (EN, "Доброго ранку, я надішлю вам звіт завтра.", "ru", "en"),
+        (EN, "", "de", "en"),
+        (EN, "Good morning, I will send you the report tomorrow.", "uz", "en"),
+        ("Salom, men hozir yordam bera olmayman, iltimos kuting.",           # Russian for Ukrainian
+         "Здравствуйте, не могу помочь вам сейчас, пожалуйста, подождите.", "uk", "uz"),
+        (EN, "Доброго ранку, я надішлю вам звіт завтра, дякую.", "ru", "en"),
+        ("Ciao, domani non posso venire in ufficio perché ho un appuntamento dal medico.",
+         "Ciao, domani non posso venire in ufficio perché ho un appuntamento dal medico.", "en", "it"))],
+     [False] * 10),
+    ("translate: same language in and out is fine", lambda: A.translation_ok(
+        "Hola, ¿cómo estás hoy?", "Hola, ¿cómo estás hoy?", "es", "es"), True),
+    ("translate: an echo is retried with a firmer request", lambda: (lambda eng: (
+        A.run(eng, "Hola, ¿puedes enviarme el contrato antes del viernes?", {"kind": "translate", "target": "it"}),
+        "It is not in Italian yet" in eng.calls[-1][0][-1]["content"]))(
+        Engine("Hola, ¿puedes enviarme el contrato antes del viernes?",
+               "Ciao, puoi inviarmi il contratto prima di venerdì?")),
+     ("Ciao, puoi inviarmi il contratto prima di venerdì?", True)),
     ("translate: Esc cancels", _translate_cancel, True),
     # custom
     ("custom: markdown made plain", lambda: A.run(Engine("**Shopping:**\n* milk\n* eggs"), "buy milk and eggs",

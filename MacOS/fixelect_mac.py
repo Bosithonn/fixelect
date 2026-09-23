@@ -372,7 +372,7 @@ class MacApp:
             if self.listener is not None:
                 self.listener.capture_keys(None)
 
-    def _do_action(self, text, item, cfg, original, front):
+    def _do_action(self, text, item, cfg, original, front, bundle_id):
         import actions
         result, _info = self._compute(text, "action", cfg, action=item)
         if result is None:
@@ -384,7 +384,7 @@ class MacApp:
             self.hud("success", "Nothing to change", "The result is the same as your text.", timeout=2500)
             return
         undo = self._paste(result, {}, original, front, "polish")
-        self._remember("action", apps.foreground()[1], text, result)
+        self._remember("action", bundle_id, text, result)
         self.hud("polish", actions.done_title(item), "", actions=undo, timeout=5000)
 
     def _paste(self, fixed, kept, original, front, sound):
@@ -519,8 +519,17 @@ class MacApp:
             if choice is None:
                 self._schedule_restore(original, 0.05)
                 return
+            import actions
+            lang = actions.needs_model(choice, cfg.get("model_profile"), detect_language(text))
+            if lang:
+                self._schedule_restore(original, 0.05)
+                name = languages.NAMES.get(lang, "This language")
+                self.hud("info", f"{name} needs the Gemma 4 model",
+                         f"{name} is in beta. Choose Gemma 4 E2B in Settings → Model.",
+                         actions=[("Model", lambda: self.open_window("dashboard", "Model"))], timeout=6000)
+                return
             if choice["kind"] in ("translate", "custom"):
-                self._do_action(text, choice, cfg, original, front)
+                self._do_action(text, choice, cfg, original, front, bundle_id)
                 return
             mode = choice["kind"]  # fix, or polish in the chosen style
 

@@ -9,6 +9,7 @@ import http.client
 import json
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import sys
@@ -22,12 +23,17 @@ if str(_tools_dir) not in sys.path:
 
 from hardware import detect_hardware, get_llama_args  # noqa: E402
 from downloader import resolve_model  # noqa: E402
-from config import get_resource_path, load_config  # noqa: E402
+from config import get_config_dir, get_resource_path, load_config  # noqa: E402
+from version import APP_VERSION  # noqa: E402
 
 DEFAULT_PORT = 18888
 CONTEXT_SIZE = 4096          # room for multi-paragraph polish (prompt + output)
 REQUEST_TIMEOUT = 180        # CPU-only polish of a long paragraph can take a while
 LOAD_TIMEOUT = 120           # first load from a cold HDD / large model
+# A server we started, still alive and answering within this many seconds, is
+# not probed over HTTP again: every probe costs ~7 ms on Windows, and one fix
+# used to make three or more of them.
+TRUST_SECONDS = 10.0
 
 
 class _KillOnCloseJob:
@@ -128,6 +134,14 @@ class EmbeddedEngine:
         self.backend_label = ""
         self._timings, self._timings_lock = [], threading.Lock()
         self._cold = True   # the first answer after the model loads is always slower
+        self._ok_at = 0.0       # monotonic time the server we own last answered
+        self._stopped = False   # we stopped our own server (idle unload): nothing to probe
+        self._atexit = False
+        # Set by the pipeline: one fixed warm-up request whose prompt cache is kept
+        # on disk (see _prime). None: no prompt cache.
+        self.primer = None
+        self._slot_dir = None
+        self._last_total = None  # tokens in the last answer's context (prompt + reply)
 
     @property
     def base_url(self):
@@ -186,9 +200,12 @@ class EmbeddedEngine:
             pass
         return None
 
-    def is_healthy(self):
-        data = self._get_json("/health")
-        return bool(data) and data.get("status") == "ok"
+    def is_healthy(self, timeout=0.8):
+        data = self._get_json("/health", timeout=timeout)
+        ok = bool(data) and data.get("status") == "ok"
+        if ok and self._owns_process:
+            self._ok_at = time.monotonic()
+        return ok
 
     def _serves_our_model(self):
         """A server already on our port is only reusable if it runs the model we want."""
@@ -202,7 +219,15 @@ class EmbeddedEngine:
             return pathlib.Path(path).name == pathlib.Path(self.model_path).name
 
     def is_running(self):
-        if self._owns_process and self.process is not None and self.process.poll() is not None:
+        if self._owns_process:
+            if self.process is None or self.process.poll() is not None:
+                return False
+            if time.monotonic() - self._ok_at < TRUST_SECONDS:
+                return True
+        elif self._stopped:
+            # We unloaded our own server. Probing its port anyway cost 0.8 s per
+            # check on Windows (a refused local connection is retried), several
+            # times over on every wake-up.
             return False
         return self.is_healthy()
 
@@ -239,12 +264,16 @@ class EmbeddedEngine:
                     f"Model file for '{self.model_profile}' not found. Open Model settings to download it."
                 )
 
-            if self.is_healthy() and self._serves_our_model():
+            # A free port has no server to reuse: skip the HTTP probe, which takes
+            # 0.8 s to fail on Windows.
+            port_busy = not self._port_free(self.port)
+            if port_busy and self.is_healthy() and self._serves_our_model():
                 print(f"  [EmbeddedEngine] Reusing engine already running on :{self.port}")
                 self._owns_process = False
+                self._stopped = False
                 return True
 
-            if not self._port_free(self.port):
+            if port_busy:
                 for candidate in range(DEFAULT_PORT + 1, DEFAULT_PORT + 20):
                     if self._port_free(candidate):
                         self.port = candidate
@@ -273,7 +302,16 @@ class EmbeddedEngine:
         cmd = [str(binary_path), "-m", str(self.model_path), "--port", str(self.port), "--log-disable"]
         cmd.extend(args)
         if bundled:
-            cmd.append("--no-webui")  # flags our pinned build is known to support
+            # Flags our pinned build is known to support. --swa-full keeps the whole
+            # sliding-window cache of Gemma 4, so the prompt prefix stays reusable:
+            # without it the second fix after every polish re-read the entire
+            # 550-token prompt (5 s on a CPU instead of 1 s).
+            cmd += ["--no-webui", "--swa-full"]
+            self._slot_dir = self._prompt_cache_dir()
+            if self._slot_dir:
+                cmd += ["--slot-save-path", str(self._slot_dir)]
+        else:
+            self._slot_dir = None
 
         env = os.environ.copy()
         backend_label = hw["backend"].upper()
@@ -310,19 +348,90 @@ class EmbeddedEngine:
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         self._owns_process = True
+        self._stopped = False
         _get_job().adopt(self.process)
-        atexit.register(self.stop)
+        if not self._atexit:   # once: every wake-up after an idle unload launches again
+            atexit.register(self.stop)
+            self._atexit = True
 
         start_t = time.time()
         while time.time() - start_t < timeout:
             if self.process.poll() is not None:
                 raise RuntimeError(f"exited with code {self.process.returncode}")
-            if self.is_healthy():
+            # Short timeout: until the server listens, each probe waits it out.
+            if self.is_healthy(timeout=0.3):
                 print(f"  [EmbeddedEngine] Model loaded in {time.time() - start_t:.1f}s.")
                 self._cold = True
+                self._prime()
+                if self.process.poll() is not None:
+                    raise RuntimeError(f"exited with code {self.process.returncode} while loading its prompt cache")
                 return
-            time.sleep(0.25)
+            time.sleep(0.1)
         raise TimeoutError(f"not ready within {timeout}s")
+
+    # -- prompt cache on disk --------------------------------------------------------
+    # Every fix starts with the same ~550 tokens of instructions and examples.
+    # Reading them took ~5 s on a CPU after every (re)load, including each wake-up
+    # after an idle unload; a saved copy of the engine's cache for them restores
+    # in ~15 ms. Only the start-up warm-up request is ever saved - the file never
+    # holds anything the user wrote (checked by its size in tokens, below).
+
+    @staticmethod
+    def _prompt_cache_dir():
+        try:
+            d = pathlib.Path(get_config_dir()) / "prompt_cache"
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except Exception:
+            return None
+
+    def _slot_file(self):
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", pathlib.Path(str(self.model_path)).stem)
+        return f"{stem}-{APP_VERSION}.slot"
+
+    def _slot(self, action):
+        """Save or restore slot 0's prompt cache. The server's JSON answer, or None."""
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=60)
+        try:
+            conn.request("POST", f"/slots/0?action={action}", body=json.dumps({"filename": self._slot_file()}),
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            data = json.loads(resp.read() or b"{}")
+            return data if resp.status == 200 else None
+        finally:
+            conn.close()
+
+    def _prime(self):
+        """Fill the prompt cache right after a load: from the saved copy when there is
+        one, otherwise by running the primer once and saving the result."""
+        if not self._slot_dir:
+            return
+        path = self._slot_dir / self._slot_file()
+        try:
+            if path.is_file():
+                if self._slot("restore"):
+                    return
+                path.unlink(missing_ok=True)   # unreadable (another llama.cpp build?): make a new one
+            if self.primer is None:
+                return
+            self._last_total = None
+            self.primer()
+            expected = self._last_total
+            saved = self._slot("save") or {}
+            # The slot holds the last request: the warm-up is prompt + reply - 1
+            # tokens. Anything else means another request got in between.
+            if not expected or saved.get("n_saved") not in (expected - 1, expected):
+                path.unlink(missing_ok=True)
+                return
+            for old in self._slot_dir.glob("*.slot"):
+                if old != path:
+                    old.unlink(missing_ok=True)   # one model's cache at a time
+        except Exception as e:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            print(f"  [EmbeddedEngine] prompt cache skipped: {type(e).__name__}: {e}")
 
     def _close_conn(self):
         if self.conn:
@@ -344,8 +453,10 @@ class EmbeddedEngine:
                     self.process.kill()
                 except Exception:
                     pass
+            self._stopped = True
         self.process = None
         self._owns_process = False
+        self._ok_at = 0.0
 
     # -- inference ---------------------------------------------------------------
 
@@ -419,7 +530,10 @@ class EmbeddedEngine:
                     continue
                 if res.status == 200:
                     self.last_used = time.time()
+                    if self._owns_process:
+                        self._ok_at = time.monotonic()
                     data = json.loads(raw.decode("utf-8"))
+                    self._last_total = (data.get("usage") or {}).get("total_tokens")
                     self._note_timings(data)
                     return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
                 if res.status in (400, 413):

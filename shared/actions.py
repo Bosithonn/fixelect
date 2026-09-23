@@ -10,6 +10,7 @@ does not apply. Instead the reply is cleaned of chat scaffolding, must not be
 empty, and a translation must come back in the language that was asked for.
 """
 
+import difflib
 import re
 
 import chunking
@@ -53,8 +54,23 @@ def custom_actions(cfg):
     return out[:MAX_CUSTOM_ACTIONS]
 
 
-def translate_targets(profile):
-    return ["en"] + list(L.supported_for(profile))
+def translate_targets(profile=None):
+    """Every language Translate offers. Uzbek (beta) is always listed; with a model that
+    can't write it well, choosing it explains that Gemma 4 is needed (see needs_model)."""
+    targets = ["en"] + list(L.SUPPORTED)
+    return targets + [c for c in L.EXTRA_BY_MODEL.get(L.MORE_LANGUAGES_MODEL, ()) if c not in targets]
+
+
+def needs_model(item, profile, source=None):
+    """The language of a translation (the one asked for, or `source`, the text's own)
+    that only Gemma 4 handles while the chosen model is another one, else None. Qwen
+    doesn't read or write Uzbek: its "translations" from Uzbek were unrelated sentences."""
+    if item.get("kind") != "translate":
+        return None
+    for lang in (item.get("target"), source):
+        if (lang not in L.supported_for(profile) and lang in L.EXTRA_BY_MODEL.get(L.MORE_LANGUAGES_MODEL, ())):
+            return lang
+    return None
 
 
 def menu_items(cfg):
@@ -102,15 +118,24 @@ def is_long(item, text):
 # Prompts
 # ---------------------------------------------------------------------------
 
-def translate_messages(text, target):
+def translate_messages(text, target, source=None, insist=False):
+    """`source` is the detected language of `text`, named when known: without it the
+    model sometimes handed Spanish or Uzbek text back untranslated. `insist` is the
+    retry after such an answer."""
     name = L.NAMES.get(target, target)
-    system = (f"You are a professional translator. Translate the user's text into natural, grammatically "
-              f"correct {name}, the way a native speaker would write it. "
+    src = L.NAMES.get(source) if source in L.NAMES and source not in ("other", target) else None
+    frm = f" from {src}" if src else ""
+    system = (f"You are a professional translator. Translate the user's text{frm} into natural, grammatically "
+              f"correct {name}, the way a native {name} speaker would write it. "
               "Keep the meaning, the tone and the layout: line breaks, lists, names, numbers, links, "
-              f"email addresses and code stay exactly as they are. Parts already in {name} stay as they are. "
-              "Reply with the translation only: no notes, no quotes, no explanations.")
+              "email addresses and code stay exactly as they are. "
+              f"Reply with the {name} translation only: no notes, no quotes, no explanations.")
+    ask = f"Translate the text above{frm} into {name}."
+    if insist:
+        ask += f" It is not in {name} yet: write every sentence in {name}."
+    # Small models follow what they read last: the request comes after the text.
     return [{"role": "system", "content": system},
-            {"role": "user", "content": f"<text>\n{text}\n</text>"}]
+            {"role": "user", "content": f"<text>\n{text}\n</text>\n\n{ask}"}]
 
 
 def custom_messages(text, instruction):
@@ -130,10 +155,10 @@ def _budget(text, factor):
     return min(2048, max(96, int(len(text.split()) * factor + 96)))
 
 
-def _ask(engine, messages, budget, temperature):
+def _ask(engine, messages, budget, temperature, source=None):
     reply = engine.chat_completion(messages=messages, temperature=temperature, max_tokens=budget,
                                    top_k=40, top_p=0.95)
-    return clean(reply or "", preserve_newlines=True)
+    return clean(reply or "", preserve_newlines=True, source=source)
 
 
 def _plain(text):
@@ -165,21 +190,47 @@ def run(engine, text, item, progress=None, cancel=None):
     raise ValueError(f"not an action: {kind}")
 
 
-def _in_language(result, target):
-    if len(result.split()) < 4:
-        return True   # too short to tell reliably
-    return detect_language(result) == target
+def _key(text, latin=False):
+    """Lower-case words without accents, for comparing a text with its translation.
+    latin=True re-spells Cyrillic in Latin letters first."""
+    if latin and L.script_profile(text)["cyrillic"] > 0.5:
+        text = L.uz_to_latin(text)
+    return " ".join(re.findall(r"[^\W_]+", L.strip_accents(text.lower())))
+
+
+def untranslated(text, result):
+    """The reply is the text itself, or the text re-spelled in another alphabet (Uzbek
+    written in Cyrillic instead of translated into Russian). Within one alphabet only a
+    near copy counts: close languages look alike (Russian and Ukrainian, Spanish and
+    Portuguese). Two words or fewer can honestly be the same in both ("OK", "Hotel Roma")."""
+    if len(_key(text).split()) <= 2:
+        return False
+    same_script = (L.script_profile(text)["cyrillic"] > 0.5) == (L.script_profile(result)["cyrillic"] > 0.5)
+    a, b = _key(text, latin=not same_script), _key(result, latin=not same_script)
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= (0.92 if same_script else 0.85)
+
+
+def translation_ok(text, result, target, source=None):
+    """Is `result` a translation of `text` into `target`?
+
+    Lenient on purpose: the language detector exists to choose how to fix text and
+    mislabels short translations ("Réunion déplacée à 15h" looked English, Italian
+    looked English or unknown), which threw good Spanish and Italian translations
+    away. Only clear evidence rejects a reply: the text handed back unchanged or
+    re-spelled, the wrong alphabet, or plainly still another language."""
+    if not result or not result.strip():
+        return False
+    if source != target and untranslated(text, result):
+        return False
+    return L.plausibly_in(result, target)
 
 
 def _translate_one(engine, text, target, source):
-    result = ""
-    for temperature in (0.0, 0.4):
-        result = _ask(engine, translate_messages(text, target), _budget(text, 3.0), temperature)
-        if result and _in_language(result, target):
+    for attempt, temperature in ((0, 0.0), (1, 0.3)):
+        result = _ask(engine, translate_messages(text, target, source, insist=attempt > 0),
+                      _budget(text, 3.0), temperature, source=text)
+        if translation_ok(text, result, target, source):
             return result
-    # The detector is unsure, but the text did change language: accept it.
-    if result and result.strip() != text.strip() and detect_language(result) != source:
-        return result
     raise ActionError(f"Couldn't translate this into {L.NAMES.get(target, target)}. "
                       "Try again, or select less text.")
 
@@ -206,7 +257,7 @@ def _custom(engine, text, instruction):
     lead, core, trail = split_edges(text)
     if len(core) > MAX_ACTION_CHARS:
         raise ActionError(f"Select up to {MAX_ACTION_CHARS:,} characters for this action.")
-    result = _plain(_ask(engine, custom_messages(core, instruction), _budget(core, 2.0), 0.3))
+    result = _plain(_ask(engine, custom_messages(core, instruction), _budget(core, 2.0), 0.3, source=core))
     if not result:
         raise ActionError("The AI returned nothing. Try again.")
     return lead + result + trail

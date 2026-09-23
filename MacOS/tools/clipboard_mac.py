@@ -132,19 +132,31 @@ def set_text(text: str, transient: bool = True, html=None, rtf=None) -> bool:
         return False
 
 
+_SNAPSHOT_BUDGET_S = 0.25
+_SNAPSHOT_MAX_BYTES = 48 * 1024 * 1024
+
+
 def snapshot():
-    """Every item/type on the pasteboard as [{type: NSData}], [] if empty, None if unavailable."""
+    """Every item/type on the pasteboard as [{type: NSData}], [] if empty, None if unavailable.
+
+    Bounded in time and size, like the Windows snapshot: it runs before every
+    Cmd+C, and a big image or a Photos / Finder item makes the source app render
+    each type on demand, which could hold the shortcut up for seconds. Types come
+    richest first, so what is kept is what matters."""
     if not _has_appkit:
         text = get_text()
         return None if text is None else [{"__text__": text}]
     try:
-        items = []
+        items, total, started = [], 0, time.time()
         for item in _pb().pasteboardItems() or []:
             entry = {}
             for t in item.types() or []:
+                if total > _SNAPSHOT_MAX_BYTES or time.time() - started > _SNAPSHOT_BUDGET_S:
+                    break
                 data = item.dataForType_(t)
                 if data is not None:
                     entry[str(t)] = data
+                    total += int(data.length()) if hasattr(data, "length") else len(data)
             if entry:
                 items.append(entry)
         return items

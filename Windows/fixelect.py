@@ -422,6 +422,9 @@ class FixelectApp:
     """Owns the model, the hotkeys and the clipboard dance. One worker thread
     runs every job in order, so nothing races the engine or the clipboard."""
 
+    DECISION_POLL = 1.0        # seconds between checks that the Polish preview still exists
+    DECISION_GONE_POLLS = 5    # ...and how many checks it may be missing before we give up
+
     def __init__(self):
         self.jobs = queue.Queue()
         self.cache = {}
@@ -496,6 +499,10 @@ class FixelectApp:
 
     def _switch_model(self, profile):
         from engine import get_default_engine
+        # The pipeline loads whichever model the config names. The tray's Model
+        # menu didn't save the choice, so the old model was loaded straight back.
+        if load_config().get("model_profile") != profile:
+            update_config(model_profile=profile)
         self.set_status("loading", "Switching model…")
         self.cache.clear()
         try:
@@ -577,7 +584,10 @@ class FixelectApp:
         """Used by the dashboard playground: runs on the worker, returns fixed text."""
         reply = queue.Queue()
         self.jobs.put(("playground", (text, mode, style, reply), time.time()))
-        ok, value = reply.get(timeout=timeout)
+        try:
+            ok, value = reply.get(timeout=timeout)
+        except queue.Empty:   # str() of it is empty: the Playground showed just "Empty"
+            raise RuntimeError("Fixelect is still busy with another job. Try again in a moment.") from None
         if not ok:
             raise RuntimeError(value)
         return value
@@ -815,8 +825,17 @@ class FixelectApp:
                 self._schedule_restore(original, 0.05)
                 return
             self._refocus(hwnd)   # the menu had focus; the user's app gets it back
+            import actions
+            lang = actions.needs_model(choice, cfg.get("model_profile"), detect_language(text))
+            if lang:
+                self._schedule_restore(original, 0.05)
+                name = languages.NAMES.get(lang, "This language")
+                self.hud("info", f"{name} needs the Gemma 4 model",
+                         f"{name} is in beta. Choose Gemma 4 E2B in Settings → Model.",
+                         actions=[("Model", lambda: self.open_dashboard("Model"))], timeout=6000, anchor=anchor)
+                return
             if choice["kind"] in ("translate", "custom"):
-                self._do_action(text, choice, cfg, original, hwnd, anchor)
+                self._do_action(text, choice, cfg, original, hwnd, exe, anchor)
                 return
             mode = choice["kind"]  # fix, or polish in the chosen style
 
@@ -913,7 +932,7 @@ class FixelectApp:
         except queue.Empty:
             return None
 
-    def _do_action(self, text, item, cfg, original, hwnd, anchor):
+    def _do_action(self, text, item, cfg, original, hwnd, exe, anchor):
         import actions
         result, _info = self._compute(text, "action", cfg, anchor, action=item)
         if result is None:
@@ -926,7 +945,7 @@ class FixelectApp:
                      timeout=2500, anchor=anchor)
             return
         undo = self._paste(result, None, original, hwnd, "polish")
-        self._remember("action", apps.foreground()[1], text, result)
+        self._remember("action", exe, text, result)
         self.hud("polish", actions.done_title(item), "", actions=undo, timeout=5000, anchor=anchor)
 
     def _compute(self, text, mode, cfg, anchor, style=None, variant=0, action=None):
@@ -1015,7 +1034,7 @@ class FixelectApp:
                 self.ui.preview_result(text, result, note)
             except Exception as e:
                 self.ui.preview_error(str(e) or type(e).__name__)
-            action, value = decisions.get()
+            action, value = self._await_decision(decisions)
             if action == "retry":
                 variant = variant + 1 if value == style else 0
                 style = value
@@ -1028,6 +1047,21 @@ class FixelectApp:
             wait_for_foreground(hwnd)
             time.sleep(0.06)
             return value
+
+    def _await_decision(self, decisions):
+        """The preview's answer. A preview that is gone without answering counts as
+        Cancel: the single worker would otherwise wait forever, and every shortcut
+        after it would be ignored until Fixelect restarted."""
+        gone_for = 0
+        while True:
+            try:
+                return decisions.get(timeout=self.DECISION_POLL)
+            except queue.Empty:
+                pass
+            preview = getattr(self.ui, "preview", None)
+            gone_for = 0 if preview is not None and preview.alive else gone_for + 1
+            if gone_for >= self.DECISION_GONE_POLLS:
+                return "cancel", None
 
     def _do_undo(self, ctx):
         if not ctx or ctx is not self._undo or time.time() - ctx["time"] > UNDO_WINDOW:
@@ -1280,9 +1314,12 @@ class FixelectApp:
     # -- main ---------------------------------------------------------------------------
 
     def run(self, show_dashboard, show_startup_toast):
-        ensure_single_instance(self.open_dashboard)
         from ui import UIManager
+        # Before the single-instance listener: a second launch arriving right now
+        # calls open_dashboard, which would otherwise build a second UIManager
+        # (two Tk interpreters in one process). Nothing starts until it is used.
         self.ui = UIManager(self.services())
+        ensure_single_instance(self.open_dashboard)
         self.ui.warm_up()
 
         just_set_up = False

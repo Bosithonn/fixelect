@@ -72,6 +72,8 @@ class TrayManager:
         self.get_status = get_status or (lambda: {"state": "ready"})
         self.icon = None
         self._thread = None
+        self._dirty = threading.Event()
+        self._refresher = None
 
     # -- actions -------------------------------------------------------------
 
@@ -149,14 +151,31 @@ class TrayManager:
         )
 
     def refresh(self):
-        """Rebuild the native menu and tooltip so they reflect current state."""
+        """Rebuild the native menu and tooltip so they reflect current state.
+
+        Returns at once: rebuilding takes ~30 ms (every model's file is looked
+        up, the registry read) and the worker calls this right before and after
+        each request to the model. A background thread does it, once for any
+        number of requests that arrive while it is busy."""
         if not self.icon:
             return
-        try:
-            self.icon.title = self._status_text()
-            self.icon.update_menu()
-        except Exception:
-            pass
+        self._dirty.set()
+        if self._refresher is None:
+            self._refresher = threading.Thread(target=self._refresh_loop, daemon=True, name="fixelect-tray")
+            self._refresher.start()
+
+    def _refresh_loop(self):
+        while True:
+            self._dirty.wait()
+            self._dirty.clear()
+            icon = self.icon
+            if icon is None:
+                continue
+            try:
+                icon.title = self._status_text()
+                icon.update_menu()
+            except Exception:
+                pass
 
     def start(self):
         if not pystray:

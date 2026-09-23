@@ -13,6 +13,7 @@ import http.client
 import json
 import os
 import pathlib
+import re
 import shutil
 import signal
 import socket
@@ -21,7 +22,8 @@ import sys
 import threading
 import time
 
-from config_mac import get_resource_path, load_config, get_lock_path, get_runtime_path, log_error
+from config_mac import get_config_dir, get_resource_path, load_config, get_lock_path, get_runtime_path, log_error
+from version import APP_VERSION
 from hardware_mac import detect_mac_hardware
 from downloader_mac import resolve_model, get_bin_dir
 
@@ -29,6 +31,7 @@ DEFAULT_PORT = 18888
 CONTEXT_SIZE = 4096
 REQUEST_TIMEOUT = 180
 LOAD_TIMEOUT = 120
+TRUST_SECONDS = 10.0   # a server we own that answered this recently is not probed again
 
 
 def _pid_alive(pid):
@@ -71,6 +74,14 @@ class MacEmbeddedEngine:
         self.publish = False  # set by the daemon: write runtime.json for window processes
         self._timings, self._timings_lock = [], threading.Lock()
         self._cold = True   # the first answer after the model loads is always slower
+        self._ok_at = 0.0       # monotonic time the server we own last answered
+        self._stopped = False   # we stopped our own server (idle unload): nothing to probe
+        # Set by the pipeline: one fixed warm-up request whose prompt cache is kept
+        # on disk (see _prime). None: no prompt cache.
+        self.primer = None
+        self._slot_dir = None
+        self._slot_model = None
+        self._last_total = None  # tokens in the last answer's context (prompt + reply)
         atexit.register(self.stop)
 
     def _note_timings(self, data):
@@ -104,9 +115,12 @@ class MacEmbeddedEngine:
             pass
         return None
 
-    def is_healthy(self, port=None) -> bool:
-        data = self._get_json("/health", port)
-        return bool(data) and data.get("status") == "ok"
+    def is_healthy(self, port=None, timeout=0.8) -> bool:
+        data = self._get_json("/health", port, timeout=timeout)
+        ok = bool(data) and data.get("status") == "ok"
+        if ok and self._owns_process and port in (None, self.port):
+            self._ok_at = time.monotonic()
+        return ok
 
     def _serves(self, model_path, port=None):
         props = self._get_json("/props", port, timeout=1.5) or {}
@@ -114,8 +128,13 @@ class MacEmbeddedEngine:
         return not path or pathlib.Path(path).name == pathlib.Path(model_path).name
 
     def is_running(self):
-        if self._owns_process and self.process is not None and self.process.poll() is not None:
-            return False
+        if self._owns_process:
+            if self.process is None or self.process.poll() is not None:
+                return False
+            if time.monotonic() - self._ok_at < TRUST_SECONDS:
+                return True   # several checks per fix: skip the HTTP round trip
+        elif self._stopped:
+            return False      # we unloaded our own server: nothing to probe
         return self.is_healthy()
 
     def ensure_running(self):
@@ -130,26 +149,28 @@ class MacEmbeddedEngine:
     # -- discovery -----------------------------------------------------------------
 
     def _find_llama_server(self):
+        """(path, pinned): pinned is True for the llama.cpp build Fixelect ships or
+        downloads itself, whose command-line flags are known."""
         arch_dir = "darwin-arm64" if self.hw["is_apple_silicon"] else "darwin-x86_64"
         bundled = pathlib.Path(getattr(sys, "_MEIPASS", pathlib.Path(__file__).resolve().parent.parent)) / "llama"
         candidates = [
-            bundled / "llama-server",                      # shipped inside Fixelect.app (Contents/Frameworks/llama)
-            get_resource_path(f"resources/bin/{arch_dir}/llama-server"),
-            get_resource_path("resources/bin/llama-server"),
-            pathlib.Path("/opt/homebrew/bin/llama-server"),
-            pathlib.Path("/usr/local/bin/llama-server"),
+            (bundled / "llama-server", True),              # shipped inside Fixelect.app (Contents/Frameworks/llama)
+            (get_resource_path(f"resources/bin/{arch_dir}/llama-server"), True),
+            (get_resource_path("resources/bin/llama-server"), True),
+            (pathlib.Path("/opt/homebrew/bin/llama-server"), False),
+            (pathlib.Path("/usr/local/bin/llama-server"), False),
         ]
         try:
-            candidates += sorted(get_bin_dir().rglob("llama-server"))
+            candidates += [(p, True) for p in sorted(get_bin_dir().rglob("llama-server"))]  # fetch_metal_engine
         except Exception:
             pass
         which = shutil.which("llama-server")
         if which:
-            candidates.append(pathlib.Path(which))
-        for p in candidates:
+            candidates.append((pathlib.Path(which), False))
+        for p, pinned in candidates:
             if p.is_file() and os.access(p, os.X_OK):
-                return p
-        return None
+                return p, pinned
+        return None, False
 
     # -- lifecycle -------------------------------------------------------------------
 
@@ -162,6 +183,7 @@ class MacEmbeddedEngine:
             if port and _pid_alive(rt.get("pid", 0)) and self.is_healthy(port) and self._serves(model_path, port):
                 self.port = port
                 self._owns_process = False
+                self._stopped = False
                 return True
             if time.time() >= deadline:
                 return False
@@ -198,12 +220,13 @@ class MacEmbeddedEngine:
                     return True
             if self.is_healthy() and self._serves(model_path):
                 self._owns_process = False
+                self._stopped = False
                 return True
 
-            server_bin = self._find_llama_server()
+            server_bin, pinned = self._find_llama_server()
             if not server_bin and self.hw.get("is_apple_silicon"):
                 from downloader_mac import fetch_metal_engine
-                server_bin = fetch_metal_engine()
+                server_bin, pinned = fetch_metal_engine(), True
             if not server_bin:
                 if shutil.which("ollama") or pathlib.Path("/opt/homebrew/bin/ollama").is_file():
                     return False  # caller falls back to Ollama
@@ -212,7 +235,20 @@ class MacEmbeddedEngine:
             self._close_conn()
             base = [str(server_bin), "-m", str(model_path), "--host", self.host,
                     "-c", str(CONTEXT_SIZE), "-np", "1", "--log-disable", "--jinja"]
-            threads = ["-t", str(max(1, (os.cpu_count() or 4) // 2))]
+            self._slot_dir, self._slot_model = None, model_path
+            if pinned:
+                # Keep Gemma 4's whole sliding-window cache so the prompt prefix stays
+                # reusable: without it the second fix after every polish re-read the
+                # entire prompt. Only for our pinned build (an old Homebrew one may not
+                # know the flags and would refuse to start).
+                base.append("--swa-full")
+                self._slot_dir = self._prompt_cache_dir()
+                if self._slot_dir:
+                    base += ["--slot-save-path", str(self._slot_dir)]
+            cores = os.cpu_count() or 4
+            # One thread per performance core generates fastest; reading the prompt
+            # is compute-bound and gains from every core.
+            threads = ["-t", str(max(1, cores // 2)), "-tb", str(cores)]
             # Metal first; if the GPU cannot start (virtual Macs, driver trouble) use the CPU.
             attempts = [["-ngl", "99"], ["-ngl", "0"] + threads] if self.hw["is_apple_silicon"] else [threads]
             env = os.environ.copy()
@@ -229,6 +265,7 @@ class MacEmbeddedEngine:
                                                 stderr=subprocess.DEVNULL, cwd=str(server_bin.parent), env=env,
                                                 start_new_session=False)
                 self._owns_process = True
+                self._stopped = False
                 t0 = time.time()
                 while time.time() - t0 < timeout:
                     if self.process.poll() is not None:
@@ -241,6 +278,13 @@ class MacEmbeddedEngine:
                     if self.is_healthy():
                         print(f"  [Engine] Model loaded in {time.time() - t0:.1f}s")
                         self._cold = True
+                        # Before runtime.json names the port: window processes can't
+                        # send a request of their own in between.
+                        self._prime()
+                        if self.process.poll() is not None:
+                            self._owns_process = False
+                            raise RuntimeError(f"llama-server exited with code {self.process.returncode} "
+                                               "while loading its prompt cache")
                         if self.publish:
                             try:
                                 get_runtime_path().write_text(json.dumps(
@@ -256,6 +300,70 @@ class MacEmbeddedEngine:
                     # Metal can hang instead of failing (virtual Macs, a stuck GPU): use the CPU.
                     print("  [Engine] GPU start timed out - retrying on the CPU")
                     log_error(f"llama-server not ready within {timeout:.0f}s on Metal; using the CPU")
+
+    # -- prompt cache on disk --------------------------------------------------------
+    # Every fix starts with the same ~550 tokens of instructions and examples.
+    # Reading them again after every (re)load, including each wake-up after an idle
+    # unload, is the slowest part of the first fix; a saved copy of the engine's
+    # cache for them restores in milliseconds. Only the start-up warm-up request is
+    # ever saved - never anything the user wrote (checked by its size in tokens).
+
+    @staticmethod
+    def _prompt_cache_dir():
+        try:
+            d = get_config_dir() / "prompt_cache"
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+        except Exception:
+            return None
+
+    def _slot_file(self):
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", pathlib.Path(str(self._slot_model)).stem)
+        return f"{stem}-{APP_VERSION}.slot"
+
+    def _slot(self, action):
+        """Save or restore slot 0's prompt cache. The server's JSON answer, or None."""
+        conn = http.client.HTTPConnection(self.host, self.port, timeout=60)
+        try:
+            conn.request("POST", f"/slots/0?action={action}", body=json.dumps({"filename": self._slot_file()}),
+                         headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            data = json.loads(resp.read() or b"{}")
+            return data if resp.status == 200 else None
+        finally:
+            conn.close()
+
+    def _prime(self):
+        """Fill the prompt cache right after a load: from the saved copy when there is
+        one, otherwise by running the primer once and saving the result."""
+        if not self._slot_dir:
+            return
+        path = self._slot_dir / self._slot_file()
+        try:
+            if path.is_file():
+                if self._slot("restore"):
+                    return
+                path.unlink(missing_ok=True)   # unreadable (another llama.cpp build?): make a new one
+            if self.primer is None:
+                return
+            self._last_total = None
+            self.primer()
+            expected = self._last_total
+            saved = self._slot("save") or {}
+            # The slot holds the last request: the warm-up is prompt + reply - 1
+            # tokens. Anything else means another request got in between.
+            if not expected or saved.get("n_saved") not in (expected - 1, expected):
+                path.unlink(missing_ok=True)
+                return
+            for old in self._slot_dir.glob("*.slot"):
+                if old != path:
+                    old.unlink(missing_ok=True)   # one model's cache at a time
+        except Exception as e:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            log_error(f"prompt cache skipped: {type(e).__name__}")
 
     def _close_conn(self):
         if self.conn:
@@ -281,8 +389,10 @@ class MacEmbeddedEngine:
                     get_runtime_path().unlink()
                 except Exception:
                     pass
+            self._stopped = True
         self.process = None
         self._owns_process = False
+        self._ok_at = 0.0
 
     # -- inference ---------------------------------------------------------------------
 
@@ -330,7 +440,10 @@ class MacEmbeddedEngine:
                     continue
                 if res.status == 200:
                     self.last_used = time.time()
+                    if self._owns_process:
+                        self._ok_at = time.monotonic()
                     data = json.loads(raw.decode("utf-8"))
+                    self._last_total = (data.get("usage") or {}).get("total_tokens")
                     self._note_timings(data)
                     return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
                 if res.status in (400, 413):

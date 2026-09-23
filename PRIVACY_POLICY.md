@@ -31,6 +31,7 @@ Fixelect keeps its files on your computer, in `%LOCALAPPDATA%\Fixelect\` on Wind
 - words.txt: the protected words you add.
 - history.json: your recent changes, while History is on (see section 2).
 - speed.json: how fast the AI model answers on this computer (numbers and dates only, never your text), so Fixelect can suggest a smaller model if yours is too slow.
+- prompt_cache/: the AI engine's working memory for Fixelect's own built-in instructions and a fixed test sentence, saved once so the model is ready faster after it reloads. It never contains your text: Fixelect checks this before keeping the file and deletes it otherwise.
 - logs/: the error log described above.
 - models/: The open-source GGUF neural network weights file downloaded directly from Hugging Face during initial setup.
 

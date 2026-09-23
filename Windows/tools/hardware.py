@@ -174,7 +174,10 @@ def get_llama_args(context_size=2048):
     if hw["is_gpu"]:
         args.extend(["-ngl", "99"])
     else:
-        args.extend(["-ngl", "0", "-t", str(hw["threads"])])
+        # Generation is memory-bound (about one thread per core is best), but
+        # reading the prompt is compute-bound: every logical core reads it ~20%
+        # faster, which is most of a fix's wait after a model (re)load.
+        args.extend(["-ngl", "0", "-t", str(hw["threads"]), "-tb", str(max(hw["threads"], hw["total_cores"]))])
 
     return args, hw
 
