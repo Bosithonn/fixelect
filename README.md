@@ -25,9 +25,9 @@
 Select text in any app, press a shortcut, and Fixelect fixes it in place. The AI model runs on your computer, so your writing never leaves it.
 
 <p align="center">
-  <a href="docs/fixelect-intro.mp4"><img src="docs/demo.webp" alt="Fixelect in 10 seconds: select text, double-tap Alt, and the typos are fixed in place, in any app" width="100%"></a>
+  <a href="docs/fixelect-intro.mp4"><img src="docs/demo.webp" alt="Select text, double-tap Alt, and the typos are fixed in place, in any app" width="100%"></a>
   <br>
-  <sub><a href="docs/fixelect-intro.mp4">▶ Watch with sound</a></sub>
+  <sub><a href="docs/fixelect-intro.mp4">▶ Watch the 48-second video with sound</a></sub>
 </p>
 
 ```
