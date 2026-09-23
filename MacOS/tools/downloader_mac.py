@@ -105,10 +105,13 @@ def find_ollama_mac_model(profile: str = "3b") -> pathlib.Path | None:
         if blob_path.is_file() and blob_path.stat().st_size > 100_000_000:
             return blob_path
 
-    # Check for direct tag manifest
-    manifest_dir = ollama_home / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5"
-    tag = "3b" if profile == "3b" else ("7b" if profile == "7b" else ("1.5b" if profile == "1.5b" else "0.5b"))
-    tag_file = manifest_dir / tag
+    # Check for direct tag manifest. Only the Qwen 2.5 sizes have one: any other
+    # profile used to fall through to the "0.5b" tag, so Gemma 4 "resolved" to an
+    # installed qwen2.5:0.5b and Fixelect ran that tiny model under Gemma's name.
+    tag = {"3b": "3b", "1.5b": "1.5b", "0.5b": "0.5b", "7b": "7b"}.get(profile)
+    if tag is None:
+        return None
+    tag_file = ollama_home / "manifests" / "registry.ollama.ai" / "library" / "qwen2.5" / tag
     if tag_file.is_file():
         try:
             import json

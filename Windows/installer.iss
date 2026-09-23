@@ -121,7 +121,13 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "--silent"; Flags: nowait runasor
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\Fixelect\logs"
+Type: filesandordirs; Name: "{localappdata}\Fixelect\prompt_cache"
 Type: files; Name: "{localappdata}\Fixelect\config.json"
+; History holds the text of recent fixes: it must not outlive the app.
+Type: files; Name: "{localappdata}\Fixelect\history.json"
+Type: files; Name: "{localappdata}\Fixelect\speed.json"
+Type: files; Name: "{localappdata}\Fixelect\chime_*.wav"
+Type: files; Name: "{localappdata}\Fixelect\*.tmp"
 
 [Code]
 function InitializeUninstall(): Boolean;

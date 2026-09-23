@@ -458,6 +458,13 @@ class ModelPicker:
 
     def _download_done(self, key, error):
         self.cancel_event = None
+        if not self.window.alive:
+            # Settings was closed while the download ran on: still switch to the
+            # model (refreshing the destroyed widgets failed before the switch).
+            if not error and not self.setup_mode:
+                C.update_config(model_profile=key)
+                self.services.model_changed(key)
+            return
         self._refresh()
         if error:
             self.info.configure(text=error, fg=RED if "paused" not in error else TEXT_2)
@@ -1403,6 +1410,8 @@ class Dashboard(_Window):
         threading.Thread(target=work, daemon=True).start()
 
     def _update_failed(self, msg):
+        if not self.alive:
+            return
         self._upd_cancel = None
         self.upd_progress.pack_forget()
         self.upd_label.configure(text=msg, fg=RED)
@@ -1706,11 +1715,19 @@ class UIManager:
         self._ensure()
 
         def make():
-            from hud_win import PolishPreview
-            if self._hud is not None:
-                self._hud.hide()
-            self.preview = PolishPreview(self.root, styles, style, on_decision)
-            self.preview.present(anchor)
+            try:
+                from hud_win import PolishPreview
+                if self._hud is not None:
+                    self._hud.hide()
+                self.preview = PolishPreview(self.root, styles, style, on_decision)
+                self.preview.present(anchor)
+            except Exception as e:
+                # The worker waits for a decision: without one every later shortcut hung.
+                print(f"  (preview failed: {e})")
+                if self.preview is not None and self.preview.alive:
+                    self.preview.cancel()
+                else:
+                    on_decision("cancel", None)
         self.post(make)
 
     def open_menu(self, items, submenu, on_choice, anchor=None):

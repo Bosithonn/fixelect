@@ -87,7 +87,7 @@ def t_apps():
 def t_engine_lookup(app_path=None):
     import engine_mac
     eng = engine_mac.MacEmbeddedEngine()
-    found = eng._find_llama_server()
+    found, _pinned = eng._find_llama_server()
     if app_path:
         server = pathlib.Path(app_path) / "Contents" / "Frameworks" / "llama" / "llama-server"
         if not server.is_file():

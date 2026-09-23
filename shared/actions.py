@@ -130,10 +130,10 @@ def _budget(text, factor):
     return min(2048, max(96, int(len(text.split()) * factor + 96)))
 
 
-def _ask(engine, messages, budget, temperature):
+def _ask(engine, messages, budget, temperature, source=None):
     reply = engine.chat_completion(messages=messages, temperature=temperature, max_tokens=budget,
                                    top_k=40, top_p=0.95)
-    return clean(reply or "", preserve_newlines=True)
+    return clean(reply or "", preserve_newlines=True, source=source)
 
 
 def _plain(text):
@@ -174,7 +174,7 @@ def _in_language(result, target):
 def _translate_one(engine, text, target, source):
     result = ""
     for temperature in (0.0, 0.4):
-        result = _ask(engine, translate_messages(text, target), _budget(text, 3.0), temperature)
+        result = _ask(engine, translate_messages(text, target), _budget(text, 3.0), temperature, source=text)
         if result and _in_language(result, target):
             return result
     # The detector is unsure, but the text did change language: accept it.
@@ -206,7 +206,7 @@ def _custom(engine, text, instruction):
     lead, core, trail = split_edges(text)
     if len(core) > MAX_ACTION_CHARS:
         raise ActionError(f"Select up to {MAX_ACTION_CHARS:,} characters for this action.")
-    result = _plain(_ask(engine, custom_messages(core, instruction), _budget(core, 2.0), 0.3))
+    result = _plain(_ask(engine, custom_messages(core, instruction), _budget(core, 2.0), 0.3, source=core))
     if not result:
         raise ActionError("The AI returned nothing. Try again.")
     return lead + result + trail

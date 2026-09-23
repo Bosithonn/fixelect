@@ -7,16 +7,19 @@ Detects:
 - Optimal model recommendation for macOS
 """
 
+import functools
 import os
 import platform
 import subprocess
 import sys
 
 
+@functools.lru_cache(maxsize=1)
 def detect_mac_hardware() -> dict:
     """
     Detect macOS hardware specifications using sysctl and system_profiler.
-    Returns a normalized hardware dictionary.
+    Returns a normalized hardware dictionary. Cached: it runs three sysctl
+    processes, and every engine start, model switch and settings page asked again.
     """
     arch = platform.machine().lower()  # 'arm64' or 'x86_64'
     is_apple_silicon = (arch == "arm64")

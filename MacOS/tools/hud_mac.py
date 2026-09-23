@@ -295,12 +295,32 @@ _UP, _DOWN, _LEFT, _RIGHT, _RETURN, _ENTER, _ESC, _DELETE = 126, 125, 123, 124, 
 
 def menu_key(code, flags=0, repeat=False):
     """Keys while the quick-action menu is open (from Fixelect's key tap). Every key
-    is taken so it can't reach the document; ⌘ / ⌃ / ⌥ chords pass through."""
-    if _menu.get("state") is None or flags & 0x1C0000:
+    is taken so it can't reach the document; ⌘ / ⌃ / ⌥ chords pass through.
+    code -1 is a mouse click (never swallowed): outside the menu it closes it."""
+    if _menu.get("state") is None:
+        return False
+    if code == -1:
+        AppHelper.callAfter(_menu_click)
+        return False
+    if flags & 0x1C0000:
         return False
     if not repeat or code in (_UP, _DOWN):
         AppHelper.callAfter(_menu_key, code)
     return True
+
+
+def _menu_click():
+    """A click elsewhere closes the menu, like any menu. It used to stay open and
+    keep taking every key, so typing after clicking back into a document vanished
+    (and a digit ran an action on the old selection)."""
+    st, panel = _menu.get("state"), _menu.get("panel")
+    if st is None or panel is None:
+        return
+    mouse, frame = NSEvent.mouseLocation(), panel.frame()
+    inside = (frame.origin.x <= mouse.x <= frame.origin.x + frame.size.width
+              and frame.origin.y <= mouse.y <= frame.origin.y + frame.size.height)
+    if not inside:
+        st["finish"](None)
 
 
 def ask_action(items, submenu):

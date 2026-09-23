@@ -1125,14 +1125,21 @@ def consensus(original, rewrites, lang="en"):
     return " ".join(out), applied, outvoted
 
 
-def clean(reply, preserve_newlines=False):
+def clean(reply, preserve_newlines=False, source=None):
     """Strip the scaffolding a chat model puts around its answer.
 
     Small models say "Sure! Here is the corrected text:" and wrap the result in
     quotes. None of that is a correction, and left in place it would look like
     a huge insertion to the guard, which would then refuse the whole sentence.
+
+    `source` is the text the model was given. Whatever the writer wrote there
+    is kept: a quote their text starts or ends with ('"Hello," he said.'
+    translated came back as 'Hola," dijo.'), a leading "Output:" and a first
+    line such as "Here is my version:".
     """
     text = reply.strip()
+    src = (source or "").strip()
+    src_first = src.splitlines()[0].strip().lower() if src else ""
 
     # Reasoning models emit a thinking block first; the answer is what follows.
     for marker in ("</think>", "</thinking>"):
@@ -1147,14 +1154,15 @@ def clean(reply, preserve_newlines=False):
     text = text.replace("</text>", "").replace("</draft>", "")
 
     for label in ("Corrected:", "corrected:", "Output:", "Polished:", "polished:"):
-        if text.startswith(label):
+        if text.startswith(label) and not src.startswith(label):
             text = text[len(label):].strip()
 
     # Drop a leading "Here is the corrected text:" style line.
     lines = text.splitlines()
     if len(lines) > 1 and lines[0].strip().endswith(":"):
         first_line = lines[0].strip().lower()
-        if any(w in first_line for w in ("here", "corrected", "polished", "revised", "version")):
+        if (any(w in first_line for w in ("here", "corrected", "polished", "revised", "version"))
+                and first_line != src_first):
             lines = lines[1:]
 
     if preserve_newlines:
@@ -1163,7 +1171,13 @@ def clean(reply, preserve_newlines=False):
         non_empty = [l.strip() for l in lines if l.strip()]
         text = " ".join(non_empty)
 
-    return text.strip().strip('"').strip("'").strip()
+    text = text.strip()
+    for quote in ('"', "'"):
+        if not src.startswith(quote):
+            text = text.lstrip(quote)
+        if not src.endswith(quote):
+            text = text.rstrip(quote)
+    return text.strip()
 
 
 def check_ollama_available():
@@ -1388,7 +1402,7 @@ def ollama_rewrites(repo, text, candidates, mode="fix"):
         res_data = post_json_ollama("/api/chat", chat_payload)
         if res_data:
             content = res_data.get("message", {}).get("content", "")
-            cleaned = clean(content, preserve_newlines=(mode == "polish"))
+            cleaned = clean(content, preserve_newlines=(mode == "polish"), source=text)
             if cleaned:
                 out.append(cleaned)
         else:
@@ -1411,7 +1425,7 @@ def ollama_rewrites(repo, text, candidates, mode="fix"):
             }
             res_gen = post_json_ollama("/api/generate", gen_payload)
             if res_gen:
-                cleaned = clean(res_gen.get("response", ""), preserve_newlines=(mode == "polish"))
+                cleaned = clean(res_gen.get("response", ""), preserve_newlines=(mode == "polish"), source=text)
                 if cleaned:
                     out.append(cleaned)
 
@@ -1451,7 +1465,7 @@ def embedded_rewrites(engine, text, candidates=1, mode="fix", messages=None, var
         top_p=0.9 if not variant else 0.95,
         seed=seed,
     )
-    cleaned = clean(content, preserve_newlines=(mode == "polish")) if content else ""
+    cleaned = clean(content, preserve_newlines=(mode == "polish"), source=text) if content else ""
     return [cleaned] if cleaned else []
 
 
@@ -1568,6 +1582,16 @@ def fix_preserving_layout(text, fix_fn, mode="fix"):
     return lead + newline.join(fixed_lines) + trail, all_applied, " ".join(all_expanded)
 
 
+WARM_UP = "this is a warm up sentence"
+
+
+def prime_request(eng):
+    """The engine's first request after it loads a model. Its prompt cache - our
+    instructions and examples plus this fixed sentence, nothing the user wrote -
+    is what the engine keeps on disk to skip re-reading them after a reload."""
+    eng.chat_completion(messages=build_messages(expand(WARM_UP), "fix"), temperature=0.0, max_tokens=64)
+
+
 def load_pipeline(model_key="qwen2.5", fast=True, beams=BEAMS, engine_type="embedded"):
     """Build a `fix(text, mode='fix') -> (corrected, applied_edits, expanded)` callable.
 
@@ -1588,13 +1612,14 @@ def load_pipeline(model_key="qwen2.5", fast=True, beams=BEAMS, engine_type="embe
             except Exception:
                 model_profile = "1.5b" if "1.5" in model_key else "3b"
             eng = get_default_engine(model_profile=model_profile)
+            eng.primer = lambda e=eng: prime_request(e)
             if eng.start() is False:
                 raise RuntimeError("llama-server unavailable")
 
             def fix_embedded(text, mode="fix", **opts):
                 return run_pipeline(get_default_engine, text, mode=mode, **opts)
 
-            fix_embedded("this is a warm up sentence")
+            fix_embedded(WARM_UP)
             return fix_embedded
         except Exception as e:
             embedded_error = e
@@ -1697,7 +1722,7 @@ def load_pipeline(model_key="qwen2.5", fast=True, beams=BEAMS, engine_type="embe
         else:
             # A causal model echoes the prompt, so only the new tokens matter.
             rewrites = [
-                clean(tok.decode(s[prompt_length:], skip_special_tokens=True))
+                clean(tok.decode(s[prompt_length:], skip_special_tokens=True), source=expanded)
                 for s in out
             ]
 
