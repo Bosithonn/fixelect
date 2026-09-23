@@ -825,6 +825,15 @@ class FixelectApp:
                 self._schedule_restore(original, 0.05)
                 return
             self._refocus(hwnd)   # the menu had focus; the user's app gets it back
+            import actions
+            lang = actions.needs_model(choice, cfg.get("model_profile"), detect_language(text))
+            if lang:
+                self._schedule_restore(original, 0.05)
+                name = languages.NAMES.get(lang, "This language")
+                self.hud("info", f"{name} needs the Gemma 4 model",
+                         f"{name} is in beta. Choose Gemma 4 E2B in Settings → Model.",
+                         actions=[("Model", lambda: self.open_dashboard("Model"))], timeout=6000, anchor=anchor)
+                return
             if choice["kind"] in ("translate", "custom"):
                 self._do_action(text, choice, cfg, original, hwnd, exe, anchor)
                 return

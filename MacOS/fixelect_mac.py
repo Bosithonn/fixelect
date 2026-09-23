@@ -519,6 +519,15 @@ class MacApp:
             if choice is None:
                 self._schedule_restore(original, 0.05)
                 return
+            import actions
+            lang = actions.needs_model(choice, cfg.get("model_profile"), detect_language(text))
+            if lang:
+                self._schedule_restore(original, 0.05)
+                name = languages.NAMES.get(lang, "This language")
+                self.hud("info", f"{name} needs the Gemma 4 model",
+                         f"{name} is in beta. Choose Gemma 4 E2B in Settings → Model.",
+                         actions=[("Model", lambda: self.open_window("dashboard", "Model"))], timeout=6000)
+                return
             if choice["kind"] in ("translate", "custom"):
                 self._do_action(text, choice, cfg, original, front, bundle_id)
                 return

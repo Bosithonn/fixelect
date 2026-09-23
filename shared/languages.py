@@ -130,6 +130,63 @@ def detect(text, is_english=None, english_words=None):
     return "other"
 
 
+# Words only English uses: "in", "do", "so" and "a" are also Italian, Spanish or Portuguese,
+# "was" and "will" German.
+_EN_ONLY = set("the and you that with this have your would could what they their there is are "
+               "were be been does did not but for from which about".split())
+_RU_ONLY, _UK_ONLY = set("ыэъё"), set("іїєґ")
+# Common words only one of the two uses (a sentence can lack the letters above).
+_RU_WORDS = set("и что это вы мы он она они здравствуйте пожалуйста спасибо сегодня хорошо нет его ее её есть "
+                "был была было были или если когда очень только тоже можно могу".split())
+_UK_WORDS = set("і та що це ви ми він вона вони будь ласка дякую сьогодні добре ні його її є був була було були "
+                "або якщо коли дуже тільки також можна можу вже".split()) - _RU_WORDS
+_UZ_CYRILLIC, _KK_ONLY = set("ўқғҳ"), set("әңөұүһ")
+
+
+def plausibly_in(text, lang):
+    """Could `text` be written in `lang`? For checking a translation, so only clear
+    evidence says no: the wrong alphabet, letters only another language has, or a
+    text that is plainly English (or, for English, plainly another language).
+    detect() is not enough here: it mislabels short texts ("Réunion déplacée à 15h"
+    looks English to it) and close relatives (Portuguese as Spanish)."""
+    letters = sum(1 for c in text if c.isalpha())
+    if letters == 0:
+        return True
+    prof = script_profile(text)
+    chars = set(text.lower())
+    if lang == "uz":
+        if prof["cyrillic"] > 0.5:   # Uzbek Cyrillic, not Russian or Kazakh
+            return not chars & _KK_ONLY and (bool(chars & _UZ_CYRILLIC) or looks_uzbek(uz_to_latin(text)))
+        return prof["latin"] > 0.5 and not _plainly_english(text) and not chars & set("ışçğ")
+    if lang in ("ru", "uk"):
+        if prof["cyrillic"] <= 0.5 or chars & (_UZ_CYRILLIC | _KK_ONLY):
+            return False
+        words = set(re.findall(r"[^\W\d_]+", text.lower()))
+        ru, uk = len(words & _RU_WORDS), len(words & _UK_WORDS)
+        if lang == "uk":
+            return not ((chars & _RU_ONLY or ru > uk) and not chars & _UK_ONLY)
+        return not ((chars & _UK_ONLY or uk > ru) and not chars & _RU_ONLY)
+    if prof["latin"] <= 0.5:
+        return False
+    words = re.findall(r"[^\W\d_]+", text.lower())
+    if lang == "en":
+        # plainly another language: its common words, and no English ones
+        if len(words) >= 4 and not any(w in _EN_ONLY for w in words):
+            other = max(sum(w in stop for w in words) for code, stop in _STOP.items() if code != "en")
+            return other / len(words) < 0.2
+        return True
+    return not _plainly_english(text, lang)
+
+
+def _plainly_english(text, lang=None):
+    """English common words and none of `lang`'s: a translation that never happened."""
+    words = re.findall(r"[^\W\d_]+", text.lower())
+    if len(words) < 3:
+        return False
+    own = sum(w in _STOP.get(lang, ()) for w in words) if lang else 0
+    return sum(w in _EN_ONLY for w in words) / len(words) >= 0.2 and own == 0
+
+
 def strip_accents(s):
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 

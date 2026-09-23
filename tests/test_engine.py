@@ -524,6 +524,43 @@ def t_win_tray_switch_saves_choice():
     return now == "1.5b", now
 
 
+def t_win_menu_translate_needs_gemma():
+    """The real shortcut handler, with the clipboard and the menu stubbed: Uzbek with a
+    Qwen model shows the Gemma 4 card and never reaches the engine; Italian goes through."""
+    fx, why = _win_app()
+    if fx is None:
+        return None, why
+    app = fx.FixelectApp()
+    cards, ran = [], []
+    old = (fx.apps.foreground, fx.clip.snapshot, fx.settle_modifiers, fx.copy_selection, fx.clip.get_text,
+           fx.clip.get_html)
+    fx.apps.foreground = lambda: (1, "notepad.exe", 4242)
+    fx.clip.snapshot = lambda: []
+    fx.settle_modifiers = lambda: None
+    fx.copy_selection = lambda: True
+    fx.clip.get_text = lambda: "Good morning, I will send you the report tomorrow."
+    fx.clip.get_html = lambda: None
+    app.hud = lambda kind, title, detail="", **k: cards.append((kind, title))
+    app._schedule_restore = lambda *a, **k: None
+    app._refocus = lambda hwnd: None
+    app._do_action = lambda text, item, *a: ran.append(item["target"])
+    try:
+        results_ = []
+        for profile, target in (("3b", "uz"), ("3b", "it"), ("gemma4-e2b", "uz")):
+            fx.update_config(model_profile=profile, disabled_apps=[])
+            cards.clear(), ran.clear()
+            app._choose_action = lambda cfg, anchor, t=target: {"kind": "translate", "target": t, "label": t}
+            app._do_hotkey_inner("menu")
+            results_.append((profile, target, list(cards), list(ran)))
+    finally:
+        (fx.apps.foreground, fx.clip.snapshot, fx.settle_modifiers, fx.copy_selection, fx.clip.get_text,
+         fx.clip.get_html) = old
+    want = [("3b", "uz", [("info", "Uzbek needs the Gemma 4 model")], []),
+            ("3b", "it", [], ["it"]),
+            ("gemma4-e2b", "uz", [], ["uz"])]
+    return results_ == want, results_
+
+
 def main():
     check("clean() keeps the writer's quotes, labels and first line", t_clean)
     check("translate keeps quotes around the text", t_translate_keeps_quotes)
@@ -543,6 +580,7 @@ def main():
     check("macOS clipboard snapshot is bounded", t_mac_snapshot_is_bounded)
     check("Windows: the Polish preview wait gives up on a vanished preview", t_win_preview_wait)
     check("Windows: switching models from the tray saves the choice", t_win_tray_switch_saves_choice)
+    check("Windows: Translate to Uzbek with Qwen asks for Gemma 4", t_win_menu_translate_needs_gemma)
     print(f"\n{sum(results)}/{len(results)} engine tests passed")
     return all(results)
 
