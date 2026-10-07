@@ -1,0 +1,451 @@
+@import "tailwindcss";
+
+/*
+ * Tokens come straight from the app's UI kit (shared/ui_kit.py):
+ * one graphite palette, with the brand blue and coral as the only accents.
+ */
+@theme static {
+  --color-bg: #0b0d12;
+  --color-surface: #12151c;
+  --color-surface-2: #181c25;
+  --color-surface-3: #1f2430;
+  --color-surface-4: #272d3b;
+  --color-field: #0e1117;
+  --color-line: #222835;
+  --color-line-strong: #303849;
+
+  --color-ink: #eceef2;
+  --color-ink-2: #a3aab8;
+  /* The app's third text tone (#687084) lifted until small text passes AA. */
+  --color-ink-3: #8990a3;
+
+  --color-accent: #3d7bff;
+  --color-accent-hover: #5a8fff;
+  --color-accent-press: #2f66e0;
+  --color-accent-soft: #15203a;
+  /* Filled buttons: the brand blue, one step deeper so white text passes AA. */
+  --color-accent-fill: #2f66e0;
+  --color-accent-fill-hover: #336dee;
+
+  --color-coral: #ff5a6e;
+  --color-coral-soft: #2a1519;
+  --color-green: #34d399;
+  --color-green-soft: #0f2a22;
+
+  /* The "any other app" the product works in: a plain light window. */
+  --color-paper: #f7f8fa;
+  --color-paper-bar: #eceef3;
+  --color-paper-ink: #1b1f2a;
+  --color-paper-ink-2: #566074;
+  --color-paper-line: #dde1e9;
+  --color-paper-select: #b6d0ff;
+
+  /* Site voice. */
+  --font-sans: var(--font-onest), "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  /* The app's own voice: on Windows this is the exact face Fixelect uses. */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+@layer base {
+  html {
+    background: var(--color-bg);
+    color-scheme: dark;
+    scroll-padding-top: 5.5rem;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html {
+      scroll-behavior: smooth;
+    }
+  }
+
+  body {
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--color-accent-press);
+    color: #fff;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent-hover);
+    outline-offset: 3px;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p,
+  li,
+  dd {
+    text-wrap: pretty;
+  }
+}
+
+@layer components {
+  .shell {
+    width: 100%;
+    max-width: 76rem;
+    margin-inline: auto;
+    padding-inline: clamp(1.25rem, 4.5vw, 2.5rem);
+  }
+
+  .section {
+    padding-block: clamp(4.5rem, 9vw, 8.5rem);
+  }
+
+  .h2 {
+    font-size: clamp(1.875rem, 2.6vw + 1.1rem, 3.125rem);
+    line-height: 1.08;
+    letter-spacing: -0.028em;
+    font-weight: 650;
+  }
+
+  .h3 {
+    font-size: clamp(1.375rem, 0.8vw + 1.15rem, 1.75rem);
+    line-height: 1.18;
+    letter-spacing: -0.018em;
+    font-weight: 650;
+  }
+
+  .lead {
+    font-size: clamp(1.125rem, 0.5vw + 1rem, 1.3125rem);
+    line-height: 1.5;
+    color: var(--color-ink-2);
+  }
+
+  .text-link {
+    color: var(--color-ink);
+    text-decoration: underline;
+    text-decoration-color: var(--color-line-strong);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.22em;
+    transition: text-decoration-color 150ms;
+  }
+  .text-link:hover {
+    text-decoration-color: var(--color-accent-hover);
+  }
+
+  /* ---------------------------------------------------------------------
+   * Hero: the headline is the demo. It starts with typos, gets selected,
+   * and is fixed in place, exactly as Fixelect does it in any app.
+   * State lives in [data-phase] on .hero: intro | typo | selected | fixed.
+   * ------------------------------------------------------------------- */
+
+  .hero-title {
+    position: relative;
+    width: fit-content;
+    white-space: nowrap;
+    font-weight: 700;
+    line-height: 1.04;
+    letter-spacing: -0.038em;
+    /* Four lines on phones: the longest one must always fit the viewport. */
+    font-size: clamp(2.25rem, calc((100vw - 3.5rem) / 6.75), 4.5rem);
+  }
+
+  @media (min-width: 40rem) {
+    .hero-title {
+      /* Three lines from here up. */
+      font-size: clamp(3rem, calc((100vw - 6rem) / 9.6), 6.125rem);
+    }
+  }
+
+  @media (min-width: 96rem) {
+    .hero-title {
+      font-size: 6.75rem;
+    }
+  }
+
+  .hero-selection {
+    background-image: linear-gradient(var(--color-accent-press), var(--color-accent-press));
+    background-repeat: no-repeat;
+    background-size: 0% 100%;
+  }
+
+  .hero[data-phase="selected"] .hero-selection {
+    background-size: 100% 100%;
+    transition: background-size 460ms cubic-bezier(0.35, 0, 0.25, 1);
+  }
+
+  /*
+   * A changed word holds both spellings in one cell, so swapping never shifts
+   * the layout. The misspelling is generated content: the document's own text
+   * is always the correct sentence.
+   */
+  .hero-word {
+    display: inline-grid;
+  }
+  .hero-word::before {
+    content: attr(data-wrong);
+    content: attr(data-wrong) / "";
+    grid-area: 1 / 1;
+    text-decoration: underline wavy var(--color-coral);
+    text-decoration-thickness: max(1.5px, 0.035em);
+    text-underline-offset: 0.13em;
+    text-decoration-skip-ink: none;
+  }
+  .hero-word-right {
+    grid-area: 1 / 1;
+    visibility: hidden;
+  }
+  .hero[data-phase="fixed"] .hero-word::before {
+    visibility: hidden;
+  }
+  .hero[data-phase="fixed"] .hero-word-right {
+    visibility: visible;
+  }
+
+  /* The selection box from the logo. */
+  .hero-frame {
+    position: absolute;
+    inset: -0.2em -0.22em -0.21em;
+    border: max(2px, 0.028em) solid var(--color-accent);
+    opacity: 0;
+    transform: scale(0.985);
+    transition:
+      opacity 160ms linear,
+      transform 260ms var(--ease-out);
+    pointer-events: none;
+  }
+  .hero[data-phase="selected"] .hero-frame {
+    opacity: 1;
+    transform: none;
+  }
+  .hero-frame > i {
+    position: absolute;
+    width: 0.2em;
+    height: 0.2em;
+    min-width: 9px;
+    min-height: 9px;
+    border-radius: 26%;
+    background: var(--color-accent);
+    translate: -50% -50%;
+  }
+  .hero-frame > i:nth-child(1) {
+    left: 0;
+    top: 0;
+  }
+  .hero-frame > i:nth-child(2) {
+    left: 100%;
+    top: 0;
+  }
+  .hero-frame > i:nth-child(3) {
+    left: 0;
+    top: 100%;
+  }
+  .hero-frame > svg {
+    position: absolute;
+    left: 100%;
+    top: 100%;
+    width: 0.42em;
+    min-width: 18px;
+    height: auto;
+    translate: -32% -30%;
+    filter: drop-shadow(0 2px 6px rgb(0 0 0 / 0.45));
+  }
+
+  .hero-status .hud {
+    transition:
+      opacity 140ms linear,
+      transform 220ms var(--ease-out);
+  }
+  .hero[data-phase="intro"] .hero-status .hud,
+  .hero[data-phase="selected"] .hero-status .hud {
+    opacity: 0;
+    transform: translateY(6px);
+    visibility: hidden;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .hero[data-phase="fixed"] .hero-word-right {
+      animation: hero-settle 2.6s ease-out both;
+    }
+  }
+
+  /* No motion wanted: show the finished state from the first paint. */
+  @media (prefers-reduced-motion: reduce) {
+    .hero[data-phase="intro"] .hero-word::before {
+      visibility: hidden;
+    }
+    .hero[data-phase="intro"] .hero-word-right {
+      visibility: visible;
+    }
+    .hero[data-phase="intro"] .hero-status .hud {
+      opacity: 1;
+      transform: none;
+      visibility: visible;
+    }
+    .hero-frame,
+    .hero-status .hud,
+    .hero[data-phase="selected"] .hero-selection {
+      transition: none;
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+   * App specimens: Fixelect's own UI, drawn with the app's values.
+   * ------------------------------------------------------------------- */
+
+  .hud {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    width: fit-content;
+    max-width: 100%;
+    padding: 0.75rem 0.875rem 0.75rem 1rem;
+    border: 1px solid var(--color-line-strong);
+    border-radius: 12px;
+    background: var(--color-surface);
+    box-shadow: 0 14px 34px rgb(0 0 0 / 0.38);
+    font-family: var(--font-ui);
+    line-height: 1.35;
+  }
+
+  .hud-button {
+    display: inline-flex;
+    align-items: center;
+    height: 2.25rem;
+    padding-inline: 0.875rem;
+    border: 1px solid var(--color-line-strong);
+    border-radius: 9px;
+    background: var(--color-surface-3);
+    color: var(--color-ink);
+    font-family: var(--font-ui);
+    font-size: 0.875rem;
+    font-weight: 600;
+    white-space: nowrap;
+    transition: background-color 120ms;
+  }
+  button.hud-button:hover {
+    background: var(--color-surface-4);
+  }
+  button.hud-button:active {
+    background: var(--color-surface-2);
+  }
+
+  .keycap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.75em;
+    height: 2.1em;
+    padding-inline: 0.7em;
+    border: 1px solid var(--color-line-strong);
+    border-bottom-width: 2px;
+    border-radius: 0.45em;
+    background: var(--color-surface-4);
+    color: var(--color-ink);
+    font-family: var(--font-ui);
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  /* FAQ disclosure marker. */
+  .faq-item > summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  .faq-item > summary::-webkit-details-marker {
+    display: none;
+  }
+  .faq-mark {
+    position: relative;
+    flex: none;
+    width: 0.875rem;
+    height: 0.875rem;
+  }
+  .faq-mark::before,
+  .faq-mark::after {
+    content: "";
+    position: absolute;
+    inset: 50% 0 auto;
+    height: 1.5px;
+    background: var(--color-ink-2);
+    translate: 0 -50%;
+    transition: rotate 200ms var(--ease-out);
+  }
+  .faq-mark::after {
+    rotate: 90deg;
+  }
+  .faq-item[open] .faq-mark::after {
+    rotate: 0deg;
+  }
+
+  /* Long-form legal text. */
+  .prose-legal h2 {
+    margin-top: 3rem;
+    font-size: 1.5rem;
+    line-height: 1.2;
+    letter-spacing: -0.018em;
+    font-weight: 650;
+    color: var(--color-ink);
+  }
+  .prose-legal h3 {
+    margin-top: 2rem;
+    font-size: 1.125rem;
+    font-weight: 650;
+    color: var(--color-ink);
+  }
+  .prose-legal p,
+  .prose-legal ul {
+    margin-top: 1rem;
+    color: var(--color-ink-2);
+  }
+  .prose-legal ul {
+    padding-left: 1.25rem;
+    list-style: disc;
+  }
+  .prose-legal li {
+    margin-top: 0.5rem;
+    padding-left: 0.25rem;
+  }
+  .prose-legal li::marker {
+    color: var(--color-ink-3);
+  }
+  .prose-legal strong {
+    color: var(--color-ink);
+    font-weight: 600;
+  }
+  .prose-legal code {
+    padding: 0.1em 0.35em;
+    border-radius: 5px;
+    background: var(--color-surface-2);
+    font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.875em;
+    color: var(--color-ink);
+    overflow-wrap: anywhere;
+  }
+}
+
+@keyframes hero-settle {
+  0%,
+  30% {
+    color: var(--color-green);
+  }
+  100% {
+    color: var(--color-ink);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
